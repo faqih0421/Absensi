@@ -1,0 +1,183 @@
+// Skema Database Aplikasi Absensi QR
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"  // Ubah dari "sqlite" ke "postgresql"
+  url      = env("DATABASE_URL")
+}
+// Akun pengguna sistem (admin, guru, operator)
+model Akun {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  password     String
+  nama         String
+  role         String   @default("admin") // admin | guru | operator
+  email        String?
+  telepon      String?
+  foto         String?
+  aktif        Boolean  @default(true)
+  lastLogin    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Data Guru
+model Guru {
+  id           String   @id @default(cuid())
+  nip          String   @unique
+  nama         String
+  jenisKelamin String   @default("L") // L | P
+  role         String   @default("guru") // guru | kepala_sekolah
+  telepon      String?
+  alamat       String?
+  foto         String?
+  qrToken      String   @unique @default(cuid())
+  mataPelajaran MataPelajaran[]
+  absensi      AbsensiGuru[]
+  kelasWali    Kelas?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Catatan aksi hapus:
+// - Hapus Guru  -> absensi guru ikut terhapus (Cascade); mapel milik guru harus dikosongkan/dipindah dulu (Restrict)
+// - Hapus Kelas -> siswa dalam kelas harus dipindah/dihapus dulu (Restrict)
+// - Hapus Siswa -> absensi, nilai, pelanggaran siswa ikut terhapus (Cascade)
+
+// Data Kelas
+model Kelas {
+  id           String   @id @default(cuid())
+  namaKelas    String   @unique
+  tingkat      String   // X | XI | XII
+  jurusan      String?
+  walikelasId  String?  @unique
+  walikelas    Guru?    @relation(fields: [walikelasId], references: [id], onDelete: SetNull)
+  siswa        Siswa[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Data Siswa
+model Siswa {
+  id           String   @id @default(cuid())
+  nis          String   @unique
+  nisn         String?
+  nama         String
+  jenisKelamin String   @default("L") // L | P
+  kelasId      String
+  kelas        Kelas    @relation(fields: [kelasId], references: [id])
+  telepon      String?
+  alamat       String?
+  foto         String?
+  qrToken      String   @unique @default(cuid())
+  tempatLahir  String?
+  tanggalLahir DateTime?
+  absensi      Absensi[]
+  absensiMapel AbsensiMapel[]
+  nilai        Nilai[]
+  pelanggaran  Pelanggaran[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Mata Pelajaran
+model MataPelajaran {
+  id           String   @id @default(cuid())
+  nama         String
+  guruId       String
+  guru         Guru     @relation(fields: [guruId], references: [id])
+  jam          String   @default("") // rentang waktu, cth: 10:30-11:23
+  hari         String   @default("Senin") // hari mengajar: Senin | Selasa | Rabu | Kamis | Jumat
+  absensiMapel AbsensiMapel[]
+  nilai        Nilai[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Jenis Pelanggaran
+model JenisPelanggaran {
+  id           String   @id @default(cuid())
+  nama         String
+  poin         Int      @default(0)
+  kategori     String   @default("ringan") // ringan | sedang | berat
+  pelanggaran  Pelanggaran[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// Pelanggaran siswa
+model Pelanggaran {
+  id                 String   @id @default(cuid())
+  siswaId            String
+  siswa              Siswa    @relation(fields: [siswaId], references: [id], onDelete: Cascade)
+  jenisPelanggaranId String
+  jenisPelanggaran   JenisPelanggaran @relation(fields: [jenisPelanggaranId], references: [id], onDelete: Cascade)
+  tanggal            DateTime @default(now())
+  catatan            String?
+  createdAt          DateTime @default(now())
+}
+
+// Absensi harian check-in / check-out siswa
+model Absensi {
+  id           String   @id @default(cuid())
+  siswaId      String
+  siswa        Siswa    @relation(fields: [siswaId], references: [id], onDelete: Cascade)
+  tanggal      DateTime @default(now())
+  jenis        String   // checkin | checkout
+  waktu        DateTime @default(now())
+  status       String   @default("hadir") // hadir | terlambat | izin | sakit | alpha
+  keterlambatan Int     @default(0) // menit keterlambatan
+  catatan      String?
+  createdAt    DateTime @default(now())
+}
+
+// Absensi per mata pelajaran
+model AbsensiMapel {
+  id              String   @id @default(cuid())
+  siswaId         String
+  siswa           Siswa    @relation(fields: [siswaId], references: [id], onDelete: Cascade)
+  mataPelajaranId String
+  mataPelajaran   MataPelajaran @relation(fields: [mataPelajaranId], references: [id], onDelete: Cascade)
+  tanggal         DateTime @default(now())
+  jamKe           Int      @default(1)
+  status          String   @default("hadir") // hadir | izin | sakit | alpha | terlambat
+  catatan         String?
+  createdAt       DateTime @default(now())
+}
+
+// Absensi check-in / check-out guru
+model AbsensiGuru {
+  id           String   @id @default(cuid())
+  guruId       String
+  guru         Guru     @relation(fields: [guruId], references: [id], onDelete: Cascade)
+  tanggal      DateTime @default(now())
+  jenis        String   // checkin | checkout
+  waktu        DateTime @default(now())
+  status       String   @default("hadir") // hadir | terlambat | izin | sakit | alpha
+  catatan      String?
+  createdAt    DateTime @default(now())
+}
+
+// Nilai siswa per mata pelajaran
+model Nilai {
+  id              String   @id @default(cuid())
+  siswaId         String
+  siswa           Siswa    @relation(fields: [siswaId], references: [id], onDelete: Cascade)
+  mataPelajaranId String
+  mataPelajaran   MataPelajaran @relation(fields: [mataPelajaranId], references: [id], onDelete: Cascade)
+  jenisNilai      String   // harian | tugas | uts | uas
+  nilai           Float
+  tanggal         DateTime @default(now())
+  createdAt       DateTime @default(now())
+}
+
+// Pengaturan sistem (key-value)
+model Pengaturan {
+  id           String   @id @default(cuid())
+  key          String   @unique
+  value        String
+  updatedAt    DateTime @updatedAt
+}
