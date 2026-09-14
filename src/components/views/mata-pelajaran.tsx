@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { useAppStore } from '@/lib/store'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -25,35 +27,32 @@ interface Mapel {
   guru?: Guru
 }
 
-// Daftar hari mengajar (Senin-Jumat)
 const HARI_LIST = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat']
 
 export function MataPelajaranView() {
   const user = useAppStore((s) => s.user)
   const isAdmin = user?.role === 'admin'
-  const [list, setList] = useState<Mapel[]>([])
-  const [guruList, setGuruList] = useState<Guru[]>([])
-  const [loading, setLoading] = useState(true)
+
+  // ✅ Mapel list — cached
+  const {
+    data: list = [],
+    isLoading,
+    isFetching,
+  } = useApiQuery<Mapel[]>('mata-pelajaran', '/api/mata-pelajaran')
+
+  // ✅ Guru list (untuk dropdown) — cached terpisah
+  const { data: guruList = [] } = useApiQuery<Guru[]>('guru', '/api/guru')
+
+  const qc = useQueryClient()
+
   const [openForm, setOpenForm] = useState(false)
   const [editing, setEditing] = useState<Mapel | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const [data, guru] = await Promise.all([
-        api<Mapel[]>('/api/mata-pelajaran'),
-        api<Guru[]>('/api/guru'),
-      ])
-      setList(data); setGuruList(guru)
-    } catch (e) {
-      toast.error('Gagal memuat data mata pelajaran')
-    } finally {
-      setLoading(false)
-    }
+  const invalidateMapel = () => {
+    qc.invalidateQueries({ queryKey: ['mata-pelajaran'] })
+    qc.invalidateQueries({ queryKey: ['dashboard'] })
   }
-
-  useEffect(() => { load() }, [])
 
   const handleSave = async (form: any) => {
     try {
@@ -64,7 +63,9 @@ export function MataPelajaranView() {
         await api('/api/mata-pelajaran', { method: 'POST', body: JSON.stringify(form) })
         toast.success('Mata pelajaran ditambahkan')
       }
-      setOpenForm(false); setEditing(null); load()
+      setOpenForm(false)
+      setEditing(null)
+      invalidateMapel()
     } catch (e: any) { toast.error(e.message) }
   }
 
@@ -73,7 +74,8 @@ export function MataPelajaranView() {
     try {
       await api(`/api/mata-pelajaran/${deleteId}`, { method: 'DELETE' })
       toast.success('Mata pelajaran dihapus')
-      setDeleteId(null); load()
+      setDeleteId(null)
+      invalidateMapel()
     } catch (e: any) { toast.error(e.message) }
   }
 
@@ -86,6 +88,9 @@ export function MataPelajaranView() {
               <CardTitle className="flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-blue-600" />
                 Mata Pelajaran
+                {isFetching && !isLoading && (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                )}
                 {!isAdmin && (
                   <Badge variant="outline" className="gap-1 text-muted-foreground">
                     <Eye className="w-3 h-3" /> Hanya Lihat
@@ -102,7 +107,7 @@ export function MataPelajaranView() {
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
           ) : list.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
@@ -189,7 +194,6 @@ function MapelForm({ open, onOpenChange, editing, guruList, onSave }: any) {
 
   useEffect(() => {
     if (editing) {
-      // jam tersimpan dalam format "HH:MM-HH:MM", pecah menjadi mulai & selesai
       const [mulai = '', selesai = ''] = (editing.jam || '').split('-')
       setForm({
         nama: editing.nama,

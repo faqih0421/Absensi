@@ -1,7 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -9,9 +11,8 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ClipboardList, Loader2, Plus, Save, FileDown, TrendingUp } from 'lucide-react'
+import { ClipboardList, Loader2, Plus, Save, FileDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { escapeField } from '@/lib/csv'
 import { tanggalWIB } from '@/lib/utils'
@@ -30,10 +31,6 @@ interface Nilai {
 
 const KKM_DEFAULT = 75
 
-// Hitung nilai akhir berbobot HANYA dari komponen yang tersedia.
-// Bobot: harian 0.2, tugas 0.3, uts 0.2, uas 0.3.
-// Komponen yang belum ada (null/undefined) TIDAK dihitung sebagai 0 —
-// rata-rata diambil hanya dari komponen yang ada, dibagi total bobotnya.
 function hitungNilaiAkhir(komponen: {
   rataHarian?: number | null
   rataTugas?: number | null
@@ -49,7 +46,6 @@ function hitungNilaiAkhir(komponen: {
   return totalBobot > 0 ? parts.reduce((s, [v, w]) => s + v * w, 0) / totalBobot : null
 }
 
-// Predikat dari nilai akhir; null bila nilai akhir belum bisa dihitung
 function predikatDari(akhir: number | null): string | null {
   if (akhir == null) return null
   return akhir >= 90 ? 'A' : akhir >= 80 ? 'B' : akhir >= 70 ? 'C' : 'D'
@@ -64,14 +60,8 @@ const JENIS_NILAI = [
 
 export function RekapNilaiView() {
   const [tab, setTab] = useState<'list' | 'input'>('list')
-  const [mapelList, setMapelList] = useState<Mapel[]>([])
-  const [kelasList, setKelasList] = useState<Kelas[]>([])
   const [selectedMapel, setSelectedMapel] = useState('')
   const [selectedKelas, setSelectedKelas] = useState('')
-  const [nilaiList, setNilaiList] = useState<Nilai[]>([])
-  const [siswaList, setSiswaList] = useState<Siswa[]>([])
-  const [loading, setLoading] = useState(false)
-  const [openInput, setOpenInput] = useState(false)
   const [inputForm, setInputForm] = useState<{ jenisNilai: string; tanggal: string; nilaiMap: Record<string, string> }>({
     jenisNilai: 'harian',
     tanggal: tanggalWIB(),
@@ -79,83 +69,70 @@ export function RekapNilaiView() {
   })
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    api<Mapel[]>('/api/mata-pelajaran').then(data => {
-      setMapelList(data)
-      if (data[0]) setSelectedMapel(data[0].id)
-    }).catch(() => toast.error('Gagal memuat data mata pelajaran'))
-    api<Kelas[]>('/api/kelas').then(setKelasList).catch(() => {})
-  }, [])
+  // ✅ Master data — cached
+  const { data: mapelListRaw } = useApiQuery<Mapel[]>('mata-pelajaran', '/api/mata-pelajaran')
+  const { data: kelasListRaw } = useApiQuery<Kelas[]>('kelas', '/api/kelas')
 
-  // Muat ulang daftar nilai saat mapel berubah
-  useEffect(() => {
-    if (!selectedMapel) return
-    setLoading(true)
-    api<Nilai[]>(`/api/nilai?mapelId=${selectedMapel}`)
-      .then(setNilaiList)
-      .catch(() => setNilaiList([]))
-      .finally(() => setLoading(false))
-  }, [selectedMapel])
+  // ✅ Nilai per mapel — cached per mapel
+  const { data: nilaiListRaw, isLoading, isFetching } = useApiQuery<Nilai[]>(
+    ['nilai', { mapelId: selectedMapel }],
+    selectedMapel ? `/api/nilai?mapelId=${selectedMapel}` : null
+  )
 
-  // Load siswa untuk kelas yang dipilih
-  useEffect(() => {
-    if (!selectedKelas) {
-      setSiswaList([])
-      return
-    }
-    api<Siswa[]>(`/api/siswa?kelasId=${selectedKelas}`)
-      .then(setSiswaList)
-      .catch(() => toast.error('Gagal memuat data siswa'))
-  }, [selectedKelas])
+  // ✅ Siswa per kelas — cached per kelas
+  const { data: siswaListRaw } = useApiQuery<Siswa[]>(
+    ['siswa', { kelasId: selectedKelas }],
+    selectedKelas ? `/api/siswa?kelasId=${selectedKelas}` : null
+  )
 
-  const handleOpenInput = () => {
+  // ✅ useMemo — agar referensi array stabil (mencegah infinite loop di useEffect)
+  const mapelList = useMemo(() => mapelListRaw ?? [], [mapelListRaw])
+  const kelasList = useMemo(() => kelasListRaw ?? [], [kelasListRaw])
+  const nilaiList = useMemo(() => nilaiListRaw ?? [], [nilaiListRaw])
+  const siswaList = useMemo(() => siswaListRaw ?? [], [siswaListRaw])
+
+  const qc = useQueryClient()
+
+  // Auto-select mapel pertama saat data datang
+  useEffect(() => {
+    if (!selectedMapel && mapelList.length > 0) setSelectedMapel(mapelList[0].id)
+  }, [mapelList, selectedMapel])
+
+  // Sync nilaiMap saat kelas / siswa berubah — dependency pakai siswaListRaw (referensi stabil)
+  useEffect(() => {
+    if (!siswaListRaw) return
     const init: Record<string, string> = {}
-    siswaList.forEach(s => { init[s.id] = '' })
-    setInputForm({
-      jenisNilai: 'harian',
-      tanggal: tanggalWIB(),
-      nilaiMap: init,
-    })
-    setOpenInput(true)
-  }
+    siswaListRaw.forEach(s => { init[s.id] = '' })
+    setInputForm(prev => ({ ...prev, nilaiMap: init }))
+  }, [siswaListRaw])
 
   const handleSaveNilai = async () => {
-    // Validasi: nilai harus angka dalam rentang 0-100
     for (const s of siswaList) {
       const v = inputForm.nilaiMap[s.id]
       if (v === undefined || v === '') continue
       const num = Number(v)
       if (!Number.isFinite(num) || num < 0 || num > 100) {
-        toast.error('Nilai harus antara 0 dan 100')
-        return
+        toast.error('Nilai harus antara 0 dan 100'); return
       }
     }
     const records = siswaList
       .filter(s => inputForm.nilaiMap[s.id] !== '')
-      .map(s => ({
-        siswaId: s.id,
-        jenisNilai: inputForm.jenisNilai,
-        nilai: Number(inputForm.nilaiMap[s.id]),
-      }))
-    if (records.length === 0) {
-      toast.error('Isi minimal satu nilai')
-      return
-    }
+      .map(s => ({ siswaId: s.id, jenisNilai: inputForm.jenisNilai, nilai: Number(inputForm.nilaiMap[s.id]) }))
+    if (records.length === 0) { toast.error('Isi minimal satu nilai'); return }
+
     setSaving(true)
     try {
       await api('/api/nilai', {
         method: 'POST',
-        body: JSON.stringify({
-          mapelId: selectedMapel,
-          tanggal: inputForm.tanggal,
-          records,
-        }),
+        body: JSON.stringify({ mapelId: selectedMapel, tanggal: inputForm.tanggal, records }),
       })
       toast.success(`Berhasil menyimpan ${records.length} nilai`)
-      setOpenInput(false)
-      // Refresh
-      const refreshed = await api<Nilai[]>(`/api/nilai?mapelId=${selectedMapel}`)
-      setNilaiList(refreshed)
+      qc.invalidateQueries({ queryKey: ['nilai'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
+      // Reset input
+      const reset: Record<string, string> = {}
+      siswaList.forEach(s => { reset[s.id] = '' })
+      setInputForm(prev => ({ ...prev, nilaiMap: reset }))
     } catch (e: any) {
       toast.error(e.message)
     } finally {
@@ -164,57 +141,48 @@ export function RekapNilaiView() {
   }
 
   const handleExport = () => {
-    // Group by siswa
     const bySiswa: Record<string, { siswa: any; nilaiByJenis: Record<string, number[]> }> = {}
     for (const n of nilaiList) {
       const key = n.siswa.id
-      if (!bySiswa[key]) {
-        bySiswa[key] = { siswa: n.siswa, nilaiByJenis: { harian: [], tugas: [], uts: [], uas: [] } }
-      }
+      if (!bySiswa[key]) bySiswa[key] = { siswa: n.siswa, nilaiByJenis: { harian: [], tugas: [], uts: [], uas: [] } }
       bySiswa[key].nilaiByJenis[n.jenisNilai].push(n.nilai)
     }
-    const avg = (arr: number[]) => arr.length ? arr.reduce((a: number, b: number) => a + b, 0) / arr.length : null
+    const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null
     const rows = Object.values(bySiswa).map(({ siswa, nilaiByJenis }) => {
       const rataHarian = avg(nilaiByJenis.harian)
       const rataTugas = avg(nilaiByJenis.tugas)
       const uts = nilaiByJenis.uts.length ? nilaiByJenis.uts[0] : null
       const uas = nilaiByJenis.uas.length ? nilaiByJenis.uas[0] : null
-      // Rumus sama dengan tabel: berbobot hanya dari komponen yang tersedia
       const akhir = hitungNilaiAkhir({ rataHarian, rataTugas, uts, uas })
       return [
-        siswa.nis,
-        siswa.nama,
-        siswa.kelas?.namaKelas || '',
+        siswa.nis, siswa.nama, siswa.kelas?.namaKelas || '',
         rataHarian != null ? rataHarian.toFixed(1) : '',
         rataTugas != null ? rataTugas.toFixed(1) : '',
-        uts != null ? uts : '',
-        uas != null ? uas : '',
+        uts != null ? uts : '', uas != null ? uas : '',
         akhir != null ? akhir.toFixed(1) : '',
       ]
     })
     const headers = ['NIS', 'Nama', 'Kelas', 'Rata Harian', 'Rata Tugas', 'UTS', 'UAS', 'Nilai Akhir']
-    // BOM + CRLF agar aman dibuka di Excel
     const csv = '\uFEFF' + [headers, ...rows].map(r => r.map(f => escapeField(String(f))).join(',')).join('\r\n')
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    // Nama file pakai NAMA mapel (bukan id), karakter aneh disanitasi
-    const namaMapel = (mapelList.find(m => m.id === selectedMapel)?.nama || 'rekap-nilai')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
+    const namaMapel = (mapelList.find(m => m.id === selectedMapel)?.nama || 'rekap-nilai').toLowerCase().replace(/[^a-z0-9]+/g, '-')
     a.download = `rekap-nilai-${namaMapel}.csv`
     a.click()
     URL.revokeObjectURL(url)
     toast.success('CSV berhasil diunduh')
   }
 
-  // Hitung rekap per siswa untuk ditampilkan
-  const rekapBySiswa: Record<string, { siswa: any; nilai: { jenis: string; nilai: number; tanggal: string }[] }> = {}
-  for (const n of nilaiList) {
-    if (!rekapBySiswa[n.siswa.id]) rekapBySiswa[n.siswa.id] = { siswa: n.siswa, nilai: [] }
-    rekapBySiswa[n.siswa.id].nilai.push({ jenis: n.jenisNilai, nilai: n.nilai, tanggal: n.tanggal })
-  }
+  const rekapBySiswa = useMemo(() => {
+    const acc: Record<string, { siswa: any; nilai: { jenis: string; nilai: number; tanggal: string }[] }> = {}
+    for (const n of nilaiList) {
+      if (!acc[n.siswa.id]) acc[n.siswa.id] = { siswa: n.siswa, nilai: [] }
+      acc[n.siswa.id].nilai.push({ jenis: n.jenisNilai, nilai: n.nilai, tanggal: n.tanggal })
+    }
+    return acc
+  }, [nilaiList])
 
   const selectedMapelObj = mapelList.find(m => m.id === selectedMapel)
 
@@ -225,6 +193,7 @@ export function RekapNilaiView() {
           <CardTitle className="flex items-center gap-2">
             <ClipboardList className="w-5 h-5 text-blue-600" />
             Rekap Nilai Siswa
+            {isFetching && !isLoading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           </CardTitle>
           <CardDescription>Kelola dan rekap nilai siswa per mata pelajaran</CardDescription>
         </CardHeader>
@@ -246,9 +215,7 @@ export function RekapNilaiView() {
               <Select value={selectedKelas} onValueChange={setSelectedKelas}>
                 <SelectTrigger><SelectValue placeholder="Pilih kelas" /></SelectTrigger>
                 <SelectContent>
-                  {kelasList.map(k => (
-                    <SelectItem key={k.id} value={k.id}>{k.namaKelas}</SelectItem>
-                  ))}
+                  {kelasList.map(k => <SelectItem key={k.id} value={k.id}>{k.namaKelas}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -276,7 +243,7 @@ export function RekapNilaiView() {
               </div>
             </CardHeader>
             <CardContent>
-              {loading ? (
+              {isLoading ? (
                 <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
               ) : Object.keys(rekapBySiswa).length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
@@ -308,10 +275,8 @@ export function RekapNilaiView() {
                         const uas = r.nilai.find(n => n.jenis === 'uas')?.nilai
                         const rataHarian = harian.length ? harian.reduce((s, n) => s + n.nilai, 0) / harian.length : null
                         const rataTugas = tugas.length ? tugas.reduce((s, n) => s + n.nilai, 0) / tugas.length : null
-                        // Nilai akhir berbobot hanya dari komponen yang tersedia (bukan 0)
                         const akhir = hitungNilaiAkhir({ rataHarian, rataTugas, uts, uas })
-                        const kkm = KKM_DEFAULT
-                        const lulus = akhir != null && akhir >= kkm
+                        const lulus = akhir != null && akhir >= KKM_DEFAULT
                         const predikat = predikatDari(akhir)
                         return (
                           <TableRow key={r.siswa.id} className="hover:bg-muted/30">
@@ -368,9 +333,7 @@ export function RekapNilaiView() {
               </div>
 
               {siswaList.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground text-sm">
-                  Pilih kelas untuk memuat daftar siswa.
-                </div>
+                <div className="text-center py-8 text-muted-foreground text-sm">Pilih kelas untuk memuat daftar siswa.</div>
               ) : (
                 <div className="border rounded-lg overflow-hidden max-h-96 overflow-y-auto">
                   <Table>
@@ -390,8 +353,7 @@ export function RekapNilaiView() {
                           <TableCell className="font-medium">{s.nama}</TableCell>
                           <TableCell>
                             <Input
-                              type="number"
-                              min="0" max="100"
+                              type="number" min="0" max="100"
                               value={inputForm.nilaiMap[s.id] || ''}
                               onChange={(e) => setInputForm({
                                 ...inputForm,

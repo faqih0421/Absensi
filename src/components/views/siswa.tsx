@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Plus, Search, Pencil, Trash2, QrCode, Users, Loader2, Download, Upload } from 'lucide-react'
@@ -37,11 +39,41 @@ interface Siswa {
 interface Kelas { id: string; namaKelas: string; tingkat: string; jurusan?: string | null }
 
 export function SiswaView() {
-  const [list, setList] = useState<Siswa[]>([])
-  const [kelasList, setKelasList] = useState<Kelas[]>([])
-  const [loading, setLoading] = useState(true)
+  // ✅ Debounce search terpisah
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [filterKelas, setFilterKelas] = useState('all')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 350)
+    return () => clearTimeout(t)
+  }, [search])
+
+  // ✅ Query key otomatis berubah → cache terpisah per kombinasi filter
+  const queryParams = new URLSearchParams()
+  if (filterKelas !== 'all') queryParams.set('kelasId', filterKelas)
+  if (debouncedSearch) queryParams.set('search', debouncedSearch)
+  const queryString = queryParams.toString()
+
+  const {
+    data: list = [],
+    isLoading,
+    isFetching,
+  } = useApiQuery<Siswa[]>(
+    ['siswa', { kelasId: filterKelas, search: debouncedSearch }],
+    `/api/siswa${queryString ? `?${queryString}` : ''}`
+  )
+
+  // ✅ Kelas list — cached sekali, tidak refetch
+  const { data: kelasList = [] } = useApiQuery<Kelas[]>('kelas', '/api/kelas')
+
+  // ✅ Pengaturan — cached sekali
+  const { data: pengaturanData } = useApiQuery<Record<string, string>>('pengaturan', '/api/pengaturan')
+  const pengaturan = pengaturanData ?? {}
+
+  const qc = useQueryClient()
+  const { setView } = useAppStore()
+
   const [openForm, setOpenForm] = useState(false)
   const [editing, setEditing] = useState<Siswa | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -49,45 +81,13 @@ export function SiswaView() {
   const [showQrDownload, setShowQrDownload] = useState(false)
   const [printing, setPrinting] = useState(false)
   const [printingQr, setPrintingQr] = useState(false)
-  const [pengaturan, setPengaturan] = useState<Record<string, string>>({})
   const [openImport, setOpenImport] = useState(false)
-  const { setView } = useAppStore()
 
-  // Guard race condition: hanya respons paling baru yang boleh menimpa daftar
-  const seqRef = useRef(0)
-
-  const load = useCallback(async () => {
-    const seq = ++seqRef.current
-    setLoading(true)
-    try {
-      const params = new URLSearchParams()
-      if (filterKelas !== 'all') params.set('kelasId', filterKelas)
-      if (search) params.set('search', search)
-      const data = await api<Siswa[]>(`/api/siswa?${params.toString()}`)
-      if (seq !== seqRef.current) return
-      setList(data)
-    } catch (e) {
-      if (seq !== seqRef.current) return
-      toast.error('Gagal memuat data siswa')
-    } finally {
-      if (seq === seqRef.current) setLoading(false)
-    }
-  }, [filterKelas, search])
-
-  // Debounce 350ms agar tidak fetch setiap ketikan pada kotak pencarian/filter
-  useEffect(() => {
-    const t = setTimeout(() => { load() }, 350)
-    return () => clearTimeout(t)
-  }, [load])
-
-  // Daftar kelas (untuk filter & form): cukup diambil sekali saat mount
-  useEffect(() => {
-    api<Kelas[]>('/api/kelas').then(setKelasList).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    api<Record<string, string>>('/api/pengaturan').then(setPengaturan).catch(() => {})
-  }, [])
+  // ✅ Invalidate cache setelah mutasi — data otomatis revalidate
+  const invalidateSiswa = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['siswa'] })
+    qc.invalidateQueries({ queryKey: ['dashboard'] })
+  }, [qc])
 
   const handleSave = async (form: any) => {
     try {
@@ -100,7 +100,7 @@ export function SiswaView() {
       }
       setOpenForm(false)
       setEditing(null)
-      load()
+      invalidateSiswa()
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -112,7 +112,7 @@ export function SiswaView() {
       await api(`/api/siswa/${deleteId}`, { method: 'DELETE' })
       toast.success('Siswa dihapus')
       setDeleteId(null)
-      load()
+      invalidateSiswa()
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -127,6 +127,9 @@ export function SiswaView() {
               <CardTitle className="flex items-center gap-2">
                 <Users className="w-5 h-5 text-blue-600" />
                 Daftar Siswa
+                {isFetching && !isLoading && (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                )}
               </CardTitle>
               <p className="text-sm text-muted-foreground mt-1">Total {list.length} siswa terdaftar</p>
             </div>
@@ -164,7 +167,7 @@ export function SiswaView() {
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12">
               <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
             </div>
@@ -265,7 +268,6 @@ export function SiswaView() {
         </DialogContent>
       </Dialog>
 
-      {/* Sheet cetak semua QR (hanya muncul saat print / simpan PDF) */}
       {printing && (
         <QrPrintSheet
           items={list.map((s) => ({
@@ -279,7 +281,6 @@ export function SiswaView() {
         />
       )}
 
-      {/* Dialog import CSV siswa */}
       <ImportCsvDialog
         open={openImport}
         onOpenChange={setOpenImport}
@@ -339,7 +340,7 @@ export function SiswaView() {
           }
           return out
         }}
-        onImported={load}
+        onImported={invalidateSiswa}
       />
 
       <SiswaForm
@@ -391,7 +392,6 @@ export function SiswaView() {
         </DialogContent>
       </Dialog>
 
-      {/* Sheet cetak kartu QR siswa tunggal (dirender hanya saat mencetak, tersembunyi di layar) */}
       {printingQr && qrSiswa && (
         <QrSiswaPrintSheet
           nama={qrSiswa.nama}
@@ -405,7 +405,6 @@ export function SiswaView() {
     </div>
   )
 }
-
 function SiswaForm({ open, onOpenChange, editing, kelasList, onSave }: {
   open: boolean
   onOpenChange: (v: boolean) => void
@@ -512,10 +511,6 @@ function SiswaForm({ open, onOpenChange, editing, kelasList, onSave }: {
   )
 }
 
-// Lembar cetak kartu QR satu siswa (id #print-area, hanya tampil saat print lewat
-// @media print di globals.css). Pola sama dengan qr-print-sheet.tsx: dirender saat
-// tombol Cetak diklik, window.print() dipanggil setelah canvas QR selesai digambar,
-// lalu onDone dipanggil setelah dialog cetak ditutup.
 function QrSiswaPrintSheet({ nama, nis, kelas, token, namaSekolah, onDone }: {
   nama: string
   nis: string
@@ -560,3 +555,5 @@ function QrSiswaPrintSheet({ nama, nis, kelas, token, namaSekolah, onDone }: {
     document.body
   )
 }
+
+// ... SiswaForm & QrSiswaPrintSheet — copy persis dari file lama

@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api, formatDate } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { useAppStore } from '@/lib/store'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -52,10 +54,7 @@ export function PelanggaranView() {
   const canCreate = role === 'admin' || role === 'guru'
   const canDelete = role === 'admin'
 
-  const [history, setHistory] = useState<Pelanggaran[]>([])
-  const [siswaList, setSiswaList] = useState<Siswa[]>([])
-  const [jenisList, setJenisList] = useState<JenisPelanggaran[]>([])
-  const [loading, setLoading] = useState(true)
+  const qc = useQueryClient()
 
   const [openForm, setOpenForm] = useState(false)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -66,33 +65,34 @@ export function PelanggaranView() {
   const [filterStart, setFilterStart] = useState('')
   const [filterEnd, setFilterEnd] = useState('')
 
+  // ✅ Query — cached
+  const { data: historyRaw, isLoading: loadingHistory, isFetching } = useApiQuery<Pelanggaran[]>(
+    'pelanggaran', '/api/pelanggaran'
+  )
+  const { data: siswaListRaw } = useApiQuery<Siswa[]>('siswa', '/api/siswa')
+  const { data: jenisListRaw } = useApiQuery<JenisPelanggaran[]>('jenis-pelanggaran', '/api/jenis-pelanggaran')
+
+  // ✅ useMemo untuk referensi stabil
+  const history = useMemo(() => historyRaw ?? [], [historyRaw])
+  const siswaList = useMemo(() => siswaListRaw ?? [], [siswaListRaw])
+  const jenisList = useMemo(() => jenisListRaw ?? [], [jenisListRaw])
+
+  const loading = loadingHistory
+
   const kelasList = useMemo(() => {
     const map = new Map<string, string>()
     siswaList.forEach((s) => { if (s.kelas) map.set(s.kelas.id, s.kelas.namaKelas) })
     return Array.from(map.entries()).map(([id, nama]) => ({ id, nama }))
   }, [siswaList])
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const [pel, siswa, jenis] = await Promise.all([
-        api<Pelanggaran[]>('/api/pelanggaran'),
-        api<Siswa[]>('/api/siswa'),
-        api<JenisPelanggaran[]>('/api/jenis-pelanggaran'),
-      ])
-      setHistory(pel)
-      setSiswaList(siswa)
-      setJenisList(jenis)
-    } catch {
-      toast.error('Gagal memuat data pelanggaran')
-    } finally {
-      setLoading(false)
-    }
+  // ✅ Invalidate — data otomatis refresh
+  const invalidateAll = () => {
+    qc.invalidateQueries({ queryKey: ['pelanggaran'] })
+    qc.invalidateQueries({ queryKey: ['dashboard'] })
+    qc.invalidateQueries({ queryKey: ['rekap'] })
   }
 
-  useEffect(() => { load() }, [])
-
-  // ===== Ringkasan bulan ini (client-side dari riwayat) =====
+  // ===== Ringkasan bulan ini =====
   const now = new Date()
   const bulanIni = history.filter((h) => {
     const d = new Date(h.tanggal)
@@ -111,7 +111,7 @@ export function PelanggaranView() {
     return sorted[0] || null
   }, [bulanIni])
 
-  // ===== Riwayat terfilter (client-side) =====
+  // ===== Riwayat terfilter =====
   const filtered = useMemo(() => history.filter((h) => {
     if (filterKelas !== 'all' && h.siswa?.kelas?.id !== filterKelas) return false
     if (filterCari.trim()) {
@@ -125,49 +125,26 @@ export function PelanggaranView() {
     return true
   }), [history, filterKelas, filterCari, filterStart, filterEnd])
 
-  const resetFilter = () => {
-    setFilterKelas('all')
-    setFilterCari('')
-    setFilterStart('')
-    setFilterEnd('')
-  }
-
   const handleDelete = async () => {
     if (!deleteId) return
     try {
       await api(`/api/pelanggaran/${deleteId}`, { method: 'DELETE' })
       toast.success('Catatan pelanggaran dihapus')
       setDeleteId(null)
-      load()
+      invalidateAll()
     } catch (e: any) {
       toast.error(e.message || 'Gagal menghapus')
     }
   }
 
   const stats = [
-    {
-      label: 'Pelanggaran Bulan Ini',
-      value: String(totalBulanIni),
-      icon: ClipboardList,
-      iconCls: 'bg-amber-100 text-amber-700',
-    },
-    {
-      label: 'Total Poin Bulan Ini',
-      value: String(totalPoinBulanIni),
-      icon: Gauge,
-      iconCls: 'bg-red-100 text-red-700',
-    },
-    {
-      label: 'Siswa Terlibat Bulan Ini',
-      value: String(siswaTerlibat),
-      icon: Users,
-      iconCls: 'bg-blue-100 text-blue-700',
-    },
+    { label: 'Pelanggaran Bulan Ini', value: String(totalBulanIni), icon: ClipboardList, iconCls: 'bg-amber-100 text-amber-700' },
+    { label: 'Total Poin Bulan Ini', value: String(totalPoinBulanIni), icon: Gauge, iconCls: 'bg-red-100 text-red-700' },
+    { label: 'Siswa Terlibat Bulan Ini', value: String(siswaTerlibat), icon: Users, iconCls: 'bg-blue-100 text-blue-700' },
   ]
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <Card>
         <CardHeader className="pb-3">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -175,10 +152,9 @@ export function PelanggaranView() {
               <CardTitle className="flex items-center gap-2">
                 <ShieldAlert className="w-5 h-5 text-amber-600" />
                 Catatan Pelanggaran Siswa
+                {isFetching && !loading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
               </CardTitle>
-              <p className="text-sm text-muted-foreground mt-1">
-                Catat dan pantau poin pelanggaran siswa sekolah
-              </p>
+              <p className="text-sm text-muted-foreground mt-1">Catat dan pantau poin pelanggaran siswa sekolah</p>
             </div>
             {canCreate && (
               <Button onClick={() => setOpenForm(true)} className="bg-blue-700 hover:bg-blue-800">
@@ -232,9 +208,7 @@ export function PelanggaranView() {
               <SelectTrigger><SelectValue placeholder="Semua kelas" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">Semua Kelas</SelectItem>
-                {kelasList.map((k) => (
-                  <SelectItem key={k.id} value={k.id}>{k.nama}</SelectItem>
-                ))}
+                {kelasList.map((k) => <SelectItem key={k.id} value={k.id}>{k.nama}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -326,7 +300,7 @@ export function PelanggaranView() {
                       {canDelete && (
                         <TableCell>
                           <div className="flex items-center justify-end">
-                            <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600" aria-label={`Hapus pelanggaran ${p.siswa?.nama}`} onClick={() => setDeleteId(p.id)}>
+                            <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600" onClick={() => setDeleteId(p.id)}>
                               <Trash2 className="w-4 h-4" />
                             </Button>
                           </div>
@@ -341,25 +315,21 @@ export function PelanggaranView() {
         </CardContent>
       </Card>
 
-      {/* Dialog catat pelanggaran */}
       {canCreate && (
         <CatatPelanggaranDialog
           open={openForm}
           onOpenChange={setOpenForm}
           siswaList={siswaList}
           jenisList={jenisList}
-          onSaved={load}
+          onSaved={invalidateAll}
         />
       )}
 
-      {/* Konfirmasi hapus */}
       <AlertDialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Konfirmasi Hapus</AlertDialogTitle>
-            <AlertDialogDescription>
-              Yakin ingin menghapus catatan pelanggaran ini? Poin siswa akan berkurang.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Yakin ingin menghapus catatan pelanggaran ini? Poin siswa akan berkurang.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Batal</AlertDialogCancel>
@@ -371,7 +341,6 @@ export function PelanggaranView() {
   )
 }
 
-// ===== Form catat pelanggaran (dialog) =====
 function CatatPelanggaranDialog({
   open,
   onOpenChange,
@@ -405,7 +374,6 @@ function CatatPelanggaranDialog({
   const selectedSiswa = siswaList.find((s) => s.id === siswaId)
   const selectedJenis = jenisList.find((j) => j.id === jenisId)
 
-  // Daftar siswa terfilter pencarian, dikelompokkan per kelas
   const grouped = useMemo(() => {
     const q = cariSiswa.trim().toLowerCase()
     const filteredSiswa = siswaList.filter((s) => {
@@ -431,7 +399,6 @@ function CatatPelanggaranDialog({
         body: JSON.stringify({
           siswaId,
           jenisPelanggaranId: jenisId,
-          // Kirim string 'YYYY-MM-DD' apa adanya — konversi toISOString() membuat tanggal mundur 1 hari
           tanggal,
           catatan: catatan.trim() || undefined,
         }),
@@ -454,7 +421,6 @@ function CatatPelanggaranDialog({
           <DialogDescription>Pilih siswa dan jenis pelanggaran yang terjadi</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
-          {/* Pilih siswa */}
           <div className="space-y-1.5">
             <Label>Pilih Siswa *</Label>
             {selectedSiswa ? (
@@ -508,28 +474,23 @@ function CatatPelanggaranDialog({
             )}
           </div>
 
-          {/* Jenis pelanggaran */}
           <div className="space-y-1.5">
             <Label>Jenis Pelanggaran *</Label>
             <Select value={jenisId} onValueChange={setJenisId}>
               <SelectTrigger><SelectValue placeholder="Pilih jenis pelanggaran" /></SelectTrigger>
               <SelectContent>
                 {jenisList.map((j) => (
-                  <SelectItem key={j.id} value={j.id}>
-                    {j.nama} ({j.poin} poin)
-                  </SelectItem>
+                  <SelectItem key={j.id} value={j.id}>{j.nama} ({j.poin} poin)</SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
 
-          {/* Tanggal */}
           <div className="space-y-1.5">
             <Label>Tanggal</Label>
             <Input type="date" value={tanggal} onChange={(e) => setTanggal(e.target.value)} />
           </div>
 
-          {/* Catatan */}
           <div className="space-y-1.5">
             <Label>Catatan (opsional)</Label>
             <Textarea

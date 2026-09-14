@@ -1,7 +1,10 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { api } from '@/lib/api'
+import { useQueryClient } from '@tanstack/react-query'
+import { api, formatDate } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
+import { useAppStore } from '@/lib/store'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -14,8 +17,6 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Plus, Pencil, Trash2, UserPlus, Loader2, ShieldCheck, ShieldAlert, KeyRound } from 'lucide-react'
 import { toast } from 'sonner'
-import { formatDate } from '@/lib/api'
-import { useAppStore } from '@/lib/store'
 
 interface Akun {
   id: string
@@ -31,25 +32,13 @@ interface Akun {
 
 export function ManajemenAkunView() {
   const { user } = useAppStore()
-  const [list, setList] = useState<Akun[]>([])
-  const [loading, setLoading] = useState(true)
+
+  const { data: list = [], isLoading, isFetching } = useApiQuery<Akun[]>('akun', '/api/akun')
+
+  const qc = useQueryClient()
   const [openForm, setOpenForm] = useState(false)
   const [editing, setEditing] = useState<Akun | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
-
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await api<Akun[]>('/api/akun')
-      setList(data)
-    } catch (e) {
-      toast.error('Gagal memuat data akun')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  useEffect(() => { load() }, [])
 
   const handleSave = async (form: any) => {
     try {
@@ -60,7 +49,8 @@ export function ManajemenAkunView() {
         await api('/api/akun', { method: 'POST', headers: { 'x-user-id': user?.id || '' }, body: JSON.stringify(form) })
         toast.success('Akun baru ditambahkan')
       }
-      setOpenForm(false); setEditing(null); load()
+      setOpenForm(false); setEditing(null)
+      qc.invalidateQueries({ queryKey: ['akun'] })
     } catch (e: any) { toast.error(e.message) }
   }
 
@@ -69,7 +59,8 @@ export function ManajemenAkunView() {
     try {
       await api(`/api/akun/${deleteId}`, { method: 'DELETE', headers: { 'x-user-id': user?.id || '' } })
       toast.success('Akun dihapus')
-      setDeleteId(null); load()
+      setDeleteId(null)
+      qc.invalidateQueries({ queryKey: ['akun'] })
     } catch (e: any) { toast.error(e.message) }
   }
 
@@ -89,6 +80,7 @@ export function ManajemenAkunView() {
               <CardTitle className="flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-blue-600" />
                 Manajemen Akun
+                {isFetching && !isLoading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
               </CardTitle>
               <p className="text-sm text-muted-foreground mt-1">Kelola akun pengguna sistem</p>
             </div>
@@ -98,7 +90,7 @@ export function ManajemenAkunView() {
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
           ) : (
             <div className="border rounded-lg overflow-hidden">
@@ -122,16 +114,12 @@ export function ManajemenAkunView() {
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <code className="bg-muted px-2 py-0.5 rounded text-xs">{a.username}</code>
-                          {a.id === user?.id && (
-                            <Badge variant="outline" className="text-xs">Anda</Badge>
-                          )}
+                          {a.id === user?.id && <Badge variant="outline" className="text-xs">Anda</Badge>}
                         </div>
                       </TableCell>
                       <TableCell className="font-medium">{a.nama}</TableCell>
                       <TableCell>
-                        <Badge variant="outline" className={roleColor[a.role]}>
-                          {a.role}
-                        </Badge>
+                        <Badge variant="outline" className={roleColor[a.role]}>{a.role}</Badge>
                       </TableCell>
                       <TableCell className="text-sm">{a.email || '-'}</TableCell>
                       <TableCell>
@@ -191,14 +179,7 @@ function AkunForm({ open, onOpenChange, editing, onSave }: any) {
 
   useEffect(() => {
     if (editing) {
-      setForm({
-        nama: editing.nama,
-        role: editing.role,
-        email: editing.email || '',
-        telepon: editing.telepon || '',
-        aktif: editing.aktif,
-        password: '',
-      })
+      setForm({ nama: editing.nama, role: editing.role, email: editing.email || '', telepon: editing.telepon || '', aktif: editing.aktif, password: '' })
     } else {
       setForm({ role: 'operator', aktif: true, email: '', telepon: '' })
     }
@@ -207,20 +188,15 @@ function AkunForm({ open, onOpenChange, editing, onSave }: any) {
   const submit = async () => {
     if (!form.nama) { toast.error('Nama wajib diisi'); return }
     if (!editing && !form.username) { toast.error('Username wajib diisi'); return }
-    // Validasi password baru (form tambah & edit): minimal 6 karakter
     if (!editing) {
       if (!form.password) { toast.error('Password wajib diisi'); return }
       if (form.password.length < 6) { toast.error('Password minimal 6 karakter'); return }
     } else if (form.password && form.password.length < 6) {
-      toast.error('Password minimal 6 karakter')
-      return
+      toast.error('Password minimal 6 karakter'); return
     }
     setSaving(true)
     try {
-      await onSave({
-        ...form,
-        username: form.username || editing?.username,
-      })
+      await onSave({ ...form, username: form.username || editing?.username })
     } finally { setSaving(false) }
   }
 

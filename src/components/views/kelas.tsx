@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,7 +12,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Plus, Pencil, Trash2, School, Loader2, Users, UserCog } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -26,27 +27,27 @@ interface Kelas {
 }
 
 export function KelasView() {
-  const [list, setList] = useState<Kelas[]>([])
-  const [guruList, setGuruList] = useState<Guru[]>([])
-  const [loading, setLoading] = useState(true)
+  // ✅ Kelas list — cached
+  const {
+    data: list = [],
+    isLoading,
+    isFetching,
+  } = useApiQuery<Kelas[]>('kelas', '/api/kelas')
+
+  // ✅ Guru list (untuk dropdown wali kelas) — cached terpisah
+  const { data: guruList = [] } = useApiQuery<Guru[]>('guru', '/api/guru')
+
+  const qc = useQueryClient()
+
   const [openForm, setOpenForm] = useState(false)
   const [editing, setEditing] = useState<Kelas | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const [data, guru] = await Promise.all([api<Kelas[]>('/api/kelas'), api<Guru[]>('/api/guru')])
-      setList(data)
-      setGuruList(guru)
-    } catch (e) {
-      toast.error('Gagal memuat data kelas')
-    } finally {
-      setLoading(false)
-    }
+  const invalidateKelas = () => {
+    qc.invalidateQueries({ queryKey: ['kelas'] })
+    qc.invalidateQueries({ queryKey: ['dashboard'] })
+    qc.invalidateQueries({ queryKey: ['guru'] }) // Wali kelas di guru ikut berubah
   }
-
-  useEffect(() => { load() }, [])
 
   const handleSave = async (form: any) => {
     try {
@@ -59,7 +60,7 @@ export function KelasView() {
       }
       setOpenForm(false)
       setEditing(null)
-      load()
+      invalidateKelas()
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -71,7 +72,7 @@ export function KelasView() {
       await api(`/api/kelas/${deleteId}`, { method: 'DELETE' })
       toast.success('Kelas dihapus')
       setDeleteId(null)
-      load()
+      invalidateKelas()
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -83,8 +84,6 @@ export function KelasView() {
     '9': 'bg-purple-100 text-purple-700 border-purple-200',
   }
 
-  // Guru yang sudah menjadi wali kelas LAIN (guruId -> nama kelas).
-  // Dipakai untuk menonaktifkan pilihan wali kelas ganda pada form.
   const waliTerpakai = useMemo(() => {
     const m: Record<string, string> = {}
     list.forEach((k) => {
@@ -93,7 +92,6 @@ export function KelasView() {
     return m
   }, [list])
 
-  // Wali milik kelas ini sendiri tetap boleh saat edit
   const waliTerpakaiForm = useMemo(() => {
     if (!editing?.walikelasId) return waliTerpakai
     const m = { ...waliTerpakai }
@@ -110,6 +108,9 @@ export function KelasView() {
               <CardTitle className="flex items-center gap-2">
                 <School className="w-5 h-5 text-blue-600" />
                 Daftar Kelas
+                {isFetching && !isLoading && (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                )}
               </CardTitle>
               <p className="text-sm text-muted-foreground mt-1">Total {list.length} kelas aktif</p>
             </div>
@@ -119,7 +120,7 @@ export function KelasView() {
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
           ) : list.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">

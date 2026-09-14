@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -23,26 +25,24 @@ interface JenisPelanggaran {
 }
 
 export function JenisPelanggaranView() {
-  const [list, setList] = useState<JenisPelanggaran[]>([])
-  const [loading, setLoading] = useState(true)
+  // ✅ Query — cached
+  const {
+    data: list = [],
+    isLoading,
+    isFetching,
+  } = useApiQuery<JenisPelanggaran[]>('jenis-pelanggaran', '/api/jenis-pelanggaran')
+
+  const qc = useQueryClient()
+
   const [openForm, setOpenForm] = useState(false)
   const [editing, setEditing] = useState<JenisPelanggaran | null>(null)
-  // Simpan item yang akan dihapus (bukan hanya id) agar dialog bisa menampilkan nama & jumlah catatan
   const [deleteItem, setDeleteItem] = useState<JenisPelanggaran | null>(null)
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await api<JenisPelanggaran[]>('/api/jenis-pelanggaran')
-      setList(data)
-    } catch (e) {
-      toast.error('Gagal memuat data')
-    } finally {
-      setLoading(false)
-    }
+  const invalidateJp = () => {
+    qc.invalidateQueries({ queryKey: ['jenis-pelanggaran'] })
+    qc.invalidateQueries({ queryKey: ['dashboard'] })
+    qc.invalidateQueries({ queryKey: ['pelanggaran'] }) // Catatan pelanggaran ikut berubah
   }
-
-  useEffect(() => { load() }, [])
 
   const handleSave = async (form: any) => {
     try {
@@ -53,7 +53,9 @@ export function JenisPelanggaranView() {
         await api('/api/jenis-pelanggaran', { method: 'POST', body: JSON.stringify(form) })
         toast.success('Jenis pelanggaran ditambahkan')
       }
-      setOpenForm(false); setEditing(null); load()
+      setOpenForm(false)
+      setEditing(null)
+      invalidateJp()
     } catch (e: any) { toast.error(e.message) }
   }
 
@@ -62,7 +64,8 @@ export function JenisPelanggaranView() {
     try {
       await api(`/api/jenis-pelanggaran/${deleteItem.id}`, { method: 'DELETE' })
       toast.success('Jenis pelanggaran dihapus')
-      setDeleteItem(null); load()
+      setDeleteItem(null)
+      invalidateJp()
     } catch (e: any) { toast.error(e.message) }
   }
 
@@ -81,6 +84,9 @@ export function JenisPelanggaranView() {
               <CardTitle className="flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-amber-600" />
                 Jenis Pelanggaran
+                {isFetching && !isLoading && (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                )}
               </CardTitle>
               <p className="text-sm text-muted-foreground mt-1">Daftar jenis pelanggaran dan poinnya</p>
             </div>
@@ -90,7 +96,7 @@ export function JenisPelanggaranView() {
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
           ) : (
             <div className="border rounded-lg overflow-hidden">

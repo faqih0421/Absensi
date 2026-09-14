@@ -1,7 +1,9 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,32 +15,27 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { fileToCompressedDataUrl } from '@/lib/image'
 
 export function PengaturanView() {
+  const { data, isLoading, isFetching, error } = useApiQuery<Record<string, string>>('pengaturan', '/api/pengaturan')
+  const qc = useQueryClient()
+
   const [form, setForm] = useState<Record<string, string>>({})
-  const [loading, setLoading] = useState(true)
-  // loaded = true hanya bila data pengaturan BERHASIL diambil dari server.
-  // Tanpa ini, form kosong bisa ter-render saat fetch gagal dan menimpa pengaturan saat disimpan.
-  const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [uploadingLogo, setUploadingLogo] = useState(false)
   const logoInputRef = useRef<HTMLInputElement>(null)
   const [uploadingBg, setUploadingBg] = useState(false)
   const bgInputRef = useRef<HTMLInputElement>(null)
 
+  // Sync form dari cache saat data siap
   useEffect(() => {
-    api<Record<string, string>>('/api/pengaturan')
-      .then((data) => {
-        setForm(data)
-        setLoaded(true)
-      })
-      .catch(() => toast.error('Gagal memuat pengaturan'))
-      .finally(() => setLoading(false))
-  }, [])
+    if (data) setForm(data)
+  }, [data])
 
   const handleSave = async () => {
     setSaving(true)
     try {
       await api('/api/pengaturan', { method: 'PUT', body: JSON.stringify(form) })
       toast.success('Pengaturan disimpan')
+      qc.invalidateQueries({ queryKey: ['pengaturan'] })
     } catch (e: any) {
       toast.error(e.message)
     } finally {
@@ -49,14 +46,8 @@ export function PengaturanView() {
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!file.type.startsWith('image/')) {
-      toast.error('File harus berupa gambar (PNG, JPG, SVG, dll)')
-      return
-    }
-    if (file.size > 2 * 1024 * 1024) {
-      toast.error('Ukuran file maksimal 2MB')
-      return
-    }
+    if (!file.type.startsWith('image/')) { toast.error('File harus berupa gambar (PNG, JPG, SVG, dll)'); return }
+    if (file.size > 2 * 1024 * 1024) { toast.error('Ukuran file maksimal 2MB'); return }
     setUploadingLogo(true)
     try {
       const dataUrl = await fileToCompressedDataUrl(file, 256)
@@ -73,17 +64,10 @@ export function PengaturanView() {
   const handleBgUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!file.type.startsWith('image/')) {
-      toast.error('File harus berupa gambar (PNG, JPG, dll)')
-      return
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error('Ukuran file maksimal 5MB')
-      return
-    }
+    if (!file.type.startsWith('image/')) { toast.error('File harus berupa gambar (PNG, JPG, dll)'); return }
+    if (file.size > 5 * 1024 * 1024) { toast.error('Ukuran file maksimal 5MB'); return }
     setUploadingBg(true)
     try {
-      // Kompres sisi terpanjang ke 1600px (kualitas 0.72) agar ringan namun tetap tajam sebagai latar
       const dataUrl = await fileToCompressedDataUrl(file, 1600, 0.72)
       setForm((prev) => ({ ...prev, bg_login: dataUrl }))
       toast.success('Background siap disimpan. Klik "Simpan Pengaturan" untuk menerapkan.')
@@ -95,12 +79,11 @@ export function PengaturanView() {
     }
   }
 
-  if (loading) {
+  if (isLoading) {
     return <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
   }
 
-  // Jangan render form bila data belum berhasil dimuat (hindari simpan form kosong)
-  if (!loaded) {
+  if (error || !data) {
     return (
       <div className="space-y-4">
         <Skeleton className="h-24 rounded-xl" />
@@ -117,6 +100,7 @@ export function PengaturanView() {
           <CardTitle className="flex items-center gap-2">
             <Settings className="w-5 h-5 text-blue-600" />
             Pengaturan Sistem
+            {isFetching && !isLoading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           </CardTitle>
           <CardDescription>Konfigurasi aplikasi absensi sekolah</CardDescription>
         </CardHeader>
@@ -148,37 +132,15 @@ export function PengaturanView() {
                   </div>
                   <div className="flex-1 space-y-1">
                     <p className="font-medium">Logo Sekolah</p>
-                    <p className="text-xs text-muted-foreground">
-                      Logo akan tampil di sidebar dan halaman login. Format PNG/JPG/SVG, maksimal 2MB.
-                    </p>
+                    <p className="text-xs text-muted-foreground">Logo akan tampil di sidebar dan halaman login. Format PNG/JPG/SVG, maksimal 2MB.</p>
                     <div className="flex gap-2 pt-1">
-                      <input
-                        ref={logoInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handleLogoUpload}
-                        disabled={uploadingLogo}
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="border-blue-300 text-blue-700 hover:bg-blue-50"
-                        disabled={uploadingLogo}
-                        onClick={() => logoInputRef.current?.click()}
-                      >
+                      <input ref={logoInputRef} type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} disabled={uploadingLogo} />
+                      <Button type="button" size="sm" variant="outline" className="border-blue-300 text-blue-700 hover:bg-blue-50" disabled={uploadingLogo} onClick={() => logoInputRef.current?.click()}>
                         {uploadingLogo ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <ImagePlus className="w-4 h-4 mr-1" />}
                         Upload Logo
                       </Button>
                       {form.logo_sekolah && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() => setForm((prev) => ({ ...prev, logo_sekolah: '' }))}
-                        >
+                        <Button type="button" size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50" onClick={() => setForm((prev) => ({ ...prev, logo_sekolah: '' }))}>
                           <Trash2 className="w-4 h-4 mr-1" /> Hapus
                         </Button>
                       )}
@@ -187,7 +149,7 @@ export function PengaturanView() {
                 </div>
               </div>
 
-              {/* Background Halaman Login */}
+              {/* Background Login */}
               <div className="rounded-lg border bg-muted/30 p-4">
                 <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                   <div className="w-40 h-24 rounded-xl border-2 overflow-hidden flex-shrink-0">
@@ -201,38 +163,15 @@ export function PengaturanView() {
                   </div>
                   <div className="flex-1 space-y-1">
                     <p className="font-medium">Background Halaman Login</p>
-                    <p className="text-xs text-muted-foreground">
-                      Foto akan tampil sebagai latar halaman login dengan lapisan biru transparan agar teks tetap terbaca.
-                      Format PNG/JPG, maksimal 5MB.
-                    </p>
+                    <p className="text-xs text-muted-foreground">Foto akan tampil sebagai latar halaman login dengan lapisan biru transparan agar teks tetap terbaca. Format PNG/JPG, maksimal 5MB.</p>
                     <div className="flex gap-2 pt-1">
-                      <input
-                        ref={bgInputRef}
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={handleBgUpload}
-                        disabled={uploadingBg}
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="border-blue-300 text-blue-700 hover:bg-blue-50"
-                        disabled={uploadingBg}
-                        onClick={() => bgInputRef.current?.click()}
-                      >
+                      <input ref={bgInputRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} disabled={uploadingBg} />
+                      <Button type="button" size="sm" variant="outline" className="border-blue-300 text-blue-700 hover:bg-blue-50" disabled={uploadingBg} onClick={() => bgInputRef.current?.click()}>
                         {uploadingBg ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <ImagePlus className="w-4 h-4 mr-1" />}
                         Upload Foto
                       </Button>
                       {form.bg_login && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          className="text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() => setForm((prev) => ({ ...prev, bg_login: '' }))}
-                        >
+                        <Button type="button" size="sm" variant="outline" className="text-red-600 border-red-200 hover:bg-red-50" onClick={() => setForm((prev) => ({ ...prev, bg_login: '' }))}>
                           <Trash2 className="w-4 h-4 mr-1" /> Hapus
                         </Button>
                       )}
@@ -296,8 +235,7 @@ export function PengaturanView() {
                 </div>
               </div>
               <div className="mt-4 bg-blue-50 border border-blue-200 rounded-lg p-3 text-xs text-blue-800">
-                <p>Siswa yang check-in setelah <strong>{form.jam_terlambat || '07:15'}</strong> akan otomatis ditandai sebagai
-                <strong> Terlambat</strong> dan menit keterlambatan akan dicatat.</p>
+                <p>Siswa yang check-in setelah <strong>{form.jam_terlambat || '07:15'}</strong> akan otomatis ditandai sebagai <strong>Terlambat</strong> dan menit keterlambatan akan dicatat.</p>
               </div>
             </CardContent>
           </Card>

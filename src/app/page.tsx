@@ -9,41 +9,33 @@ import { Toaster } from '@/components/ui/sonner'
 
 export default function Home() {
   const { user } = useAppStore()
-  const [bootstrapped, setBootstrapped] = useState(false)
-  const [seeding, setSeeding] = useState(false)
+  const [mounted, setMounted] = useState(false)
 
-  // Saat pertama load, cek status seed database
+  // Hydration guard — jangan render sebelum store selesai hydrate
   useEffect(() => {
+    setMounted(true)
+  }, [])
+
+  // Seed check di BACKGROUND — tidak blocking render
+  useEffect(() => {
+    if (!mounted) return
     ;(async () => {
       try {
         const status = await api<{ seeded: boolean }>('/api/seed')
         if (!status.seeded) {
-          setSeeding(true)
           await api('/api/seed', { method: 'POST' })
-          setSeeding(false)
         }
-      } catch (e) {
-        console.error('Seed check error:', e)
-      } finally {
-        setBootstrapped(true)
+      } catch {
+        // Silent — app tetap jalan
       }
     })()
-  }, [])
+  }, [mounted])
 
-  if (!bootstrapped || seeding) {
+  // Render UI langsung — tidak tunggu seed check
+  if (!mounted) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-sky-50 via-white to-blue-50">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-          <div className="text-center">
-            <h2 className="text-xl font-semibold text-blue-800">
-              {seeding ? 'Memuat data awal...' : 'Memuat aplikasi...'}
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              SistAbsen - Sistem Absensi QR
-            </p>
-          </div>
-        </div>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-sky-50 via-white to-blue-50">
+        <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
       </div>
     )
   }

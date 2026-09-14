@@ -1,7 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,9 +39,27 @@ const ROLE_LABELS: Record<string, string> = {
 }
 
 export function GuruView() {
-  const [list, setList] = useState<Guru[]>([])
-  const [loading, setLoading] = useState(true)
+  // ✅ Search dengan debounce
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 350)
+    return () => clearTimeout(t)
+  }, [search])
+
+  // ✅ Query dengan key depend pada search → cache terpisah per kata kunci
+  const {
+    data: list = [],
+    isLoading,
+    isFetching,
+  } = useApiQuery<Guru[]>(
+    ['guru', { search: debouncedSearch }],
+    `/api/guru${debouncedSearch ? `?search=${encodeURIComponent(debouncedSearch)}` : ''}`
+  )
+
+  const qc = useQueryClient()
+
   const [openForm, setOpenForm] = useState(false)
   const [editing, setEditing] = useState<Guru | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -48,30 +68,11 @@ export function GuruView() {
   const [printing, setPrinting] = useState(false)
   const [openImport, setOpenImport] = useState(false)
 
-  // Guard race condition: hanya respons paling baru yang boleh menimpa daftar
-  const seqRef = useRef(0)
-
-  const load = useCallback(async () => {
-    const seq = ++seqRef.current
-    setLoading(true)
-    try {
-      const params = search ? `?search=${encodeURIComponent(search)}` : ''
-      const data = await api<Guru[]>(`/api/guru${params}`)
-      if (seq !== seqRef.current) return
-      setList(data)
-    } catch (e) {
-      if (seq !== seqRef.current) return
-      toast.error('Gagal memuat data guru')
-    } finally {
-      if (seq === seqRef.current) setLoading(false)
-    }
-  }, [search])
-
-  // Debounce 350ms agar tidak fetch setiap ketikan pada kotak pencarian
-  useEffect(() => {
-    const t = setTimeout(() => { load() }, 350)
-    return () => clearTimeout(t)
-  }, [load])
+  // ✅ Invalidate cache guru & dashboard setelah mutasi
+  const invalidateGuru = () => {
+    qc.invalidateQueries({ queryKey: ['guru'] })
+    qc.invalidateQueries({ queryKey: ['dashboard'] })
+  }
 
   const handleSave = async (form: any) => {
     try {
@@ -84,7 +85,7 @@ export function GuruView() {
       }
       setOpenForm(false)
       setEditing(null)
-      load()
+      invalidateGuru()
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -96,7 +97,7 @@ export function GuruView() {
       await api(`/api/guru/${deleteId}`, { method: 'DELETE' })
       toast.success('Guru dihapus')
       setDeleteId(null)
-      load()
+      invalidateGuru()
     } catch (e: any) {
       toast.error(e.message)
     }
@@ -111,6 +112,9 @@ export function GuruView() {
               <CardTitle className="flex items-center gap-2">
                 <UserCog className="w-5 h-5 text-blue-600" />
                 Daftar Guru
+                {isFetching && !isLoading && (
+                  <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                )}
               </CardTitle>
               <p className="text-sm text-muted-foreground mt-1">Total {list.length} guru terdaftar</p>
             </div>
@@ -134,7 +138,7 @@ export function GuruView() {
           </div>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
           ) : list.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
@@ -244,7 +248,6 @@ export function GuruView() {
         </DialogContent>
       </Dialog>
 
-      {/* Sheet cetak semua QR guru (hanya muncul saat print / simpan PDF) */}
       {printing && (
         <QrPrintSheet
           items={list.map((g) => ({
@@ -258,7 +261,6 @@ export function GuruView() {
         />
       )}
 
-      {/* Dialog import CSV guru */}
       <ImportCsvDialog
         open={openImport}
         onOpenChange={setOpenImport}
@@ -309,7 +311,7 @@ export function GuruView() {
           }
           return out
         }}
-        onImported={load}
+        onImported={invalidateGuru}
       />
 
       <GuruForm open={openForm} onOpenChange={setOpenForm} editing={editing} onSave={handleSave} />
@@ -406,7 +408,6 @@ function GuruForm({ open, onOpenChange, editing, onSave }: any) {
               <SelectContent>
                 <SelectItem value="guru">Guru</SelectItem>
                 <SelectItem value="kepala_sekolah">Kepala Sekolah</SelectItem>
-                {/* Role admin dikelola lewat Manajemen Akun; opsi hanya tampil saat mengedit data lama ber-role admin agar nilai existing tetap tampil */}
                 {form.role === 'admin' && <SelectItem value="admin">Admin</SelectItem>}
               </SelectContent>
             </Select>

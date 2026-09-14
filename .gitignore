@@ -36,3 +36,6 @@ prisma/migrations/*.sql.bak
 # Misc
 *.pem
 .vercel
+
+bun.lock
+bun.lockb

@@ -1,13 +1,15 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { escapeField } from '@/lib/csv'
 import { tanggalWIB } from '@/lib/utils'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -37,48 +39,32 @@ const BULAN = [
 ]
 
 export function RekapBulananView() {
-  // Bulan berjalan (YYYY-MM) zona WIB
   const [bulan, setBulan] = useState(tanggalWIB().slice(0, 7))
   const [kelasId, setKelasId] = useState('all')
-  const [kelasList, setKelasList] = useState<Kelas[]>([])
-  const [rekap, setRekap] = useState<RekapItem[]>([])
-  const [loading, setLoading] = useState(false)
   const [printing, setPrinting] = useState(false)
-  const [pengaturan, setPengaturan] = useState<Record<string, string>>({})
 
-  // Bulan aman: bila kosong, kembali ke bulan berjalan — mencegah split('-') menghasilkan undefined
   const bulanAman = bulan || tanggalWIB().slice(0, 7)
 
-  useEffect(() => {
-    api<Kelas[]>('/api/kelas').then(setKelasList).catch(() => {})
-    api<Record<string, string>>('/api/pengaturan').then(setPengaturan).catch(() => {})
-  }, [])
+  // ✅ Master data — cached
+  const { data: kelasListRaw } = useApiQuery<Kelas[]>('kelas', '/api/kelas')
+  const { data: pengaturanRaw } = useApiQuery<Record<string, string>>('pengaturan', '/api/pengaturan')
 
-  const load = useCallback(async () => {
-    if (!bulanAman) {
-      setRekap([])
-      return
-    }
-    setLoading(true)
-    try {
-      const params = new URLSearchParams({ bulan: bulanAman })
-      if (kelasId !== 'all') params.set('kelasId', kelasId)
-      const data = await api<{ rekap: RekapItem[]; totalSiswa: number }>(`/api/rekap?${params.toString()}`)
-      setRekap(data.rekap)
-    } catch (e: any) {
-      toast.error(e.message)
-    } finally {
-      setLoading(false)
-    }
-  }, [bulanAman, kelasId])
+  const kelasList = useMemo(() => kelasListRaw ?? [], [kelasListRaw])
+  const pengaturan = useMemo(() => pengaturanRaw ?? {}, [pengaturanRaw])
 
-  useEffect(() => { load() }, [load])
+  // ✅ Rekap per (bulan, kelas) — cached per kombinasi
+  const {
+    data: rekapRaw,
+    isLoading,
+    isFetching,
+  } = useApiQuery<{ rekap: RekapItem[]; totalSiswa: number }>(
+    ['rekap', { bulan: bulanAman, kelasId }],
+    `/api/rekap?bulan=${bulanAman}${kelasId !== 'all' ? `&kelasId=${kelasId}` : ''}`
+  )
+  const rekap = useMemo(() => rekapRaw?.rekap ?? [], [rekapRaw])
 
   const handlePrint = () => {
-    if (rekap.length === 0) {
-      toast.error('Tidak ada data untuk dicetak')
-      return
-    }
+    if (rekap.length === 0) { toast.error('Tidak ada data untuk dicetak'); return }
     setPrinting(true)
   }
 
@@ -110,7 +96,6 @@ export function RekapBulananView() {
     return `${(((r.hadir + r.terlambat) / total) * 100).toFixed(1)}%`
   }
 
-  // Stats
   const totalHadir = rekap.reduce((s, r) => s + r.hadir, 0)
   const totalTerlambat = rekap.reduce((s, r) => s + r.terlambat, 0)
   const totalIzin = rekap.reduce((s, r) => s + r.izin, 0)
@@ -124,6 +109,7 @@ export function RekapBulananView() {
           <CardTitle className="flex items-center gap-2">
             <CalendarCheck className="w-5 h-5 text-blue-600" />
             Rekap Bulanan Kehadiran
+            {isFetching && !isLoading && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           </CardTitle>
           <CardDescription>Rekapitulasi kehadiran siswa per bulan</CardDescription>
         </CardHeader>
@@ -134,10 +120,7 @@ export function RekapBulananView() {
               <Input
                 type="month"
                 value={bulan}
-                onChange={(e) => {
-                  // Bila input dikosongkan, pertahankan bulan terakhir yang valid
-                  if (e.target.value) setBulan(e.target.value)
-                }}
+                onChange={(e) => { if (e.target.value) setBulan(e.target.value) }}
               />
             </div>
             <div className="space-y-1.5">
@@ -172,13 +155,11 @@ export function RekapBulananView() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">
-            Detail Rekap - {bulanLabel} {year}
-          </CardTitle>
+          <CardTitle className="text-base">Detail Rekap - {bulanLabel} {year}</CardTitle>
           <CardDescription>{rekap.length} siswa</CardDescription>
         </CardHeader>
         <CardContent>
-          {loading ? (
+          {isLoading ? (
             <div className="flex justify-center py-12"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>
           ) : rekap.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
@@ -230,7 +211,6 @@ export function RekapBulananView() {
         </CardContent>
       </Card>
 
-      {/* Lembar cetak rekap (dirender hanya saat mencetak, tersembunyi di layar) */}
       {printing && (
         <RekapPrintSheet
           rekap={rekap}
@@ -254,13 +234,6 @@ function StatBox({ label, value, color }: { label: string; value: number; color:
   )
 }
 
-// Import Input component (need to add at top, but to keep code single-file, define here)
-import { Input } from '@/components/ui/input'
-
-// Lembar cetak Rekap Bulanan: kop sekolah, judul, tabel rekap, dan blok tanda tangan.
-// Mengikuti pola qr-print-sheet.tsx: dirender saat tombol Cetak diklik, tersembunyi di layar
-// (id #print-area hanya tampil saat print lewat @media print di globals.css),
-// window.print() dipanggil setelah render selesai lalu onDone dipanggil setelah cetak.
 function RekapPrintSheet({ rekap, periode, kelasLabel, pengaturan, persenKehadiran, onDone }: {
   rekap: RekapItem[]
   periode: string
@@ -270,9 +243,7 @@ function RekapPrintSheet({ rekap, periode, kelasLabel, pengaturan, persenKehadir
   onDone: () => void
 }) {
   const onDoneRef = useRef(onDone)
-  useEffect(() => {
-    onDoneRef.current = onDone
-  }, [onDone])
+  useEffect(() => { onDoneRef.current = onDone }, [onDone])
 
   useEffect(() => {
     let finished = false
@@ -300,11 +271,8 @@ function RekapPrintSheet({ rekap, periode, kelasLabel, pengaturan, persenKehadir
 
   return createPortal(
     <div id="print-area" className="hidden print:block" style={{ fontFamily: 'Arial, Helvetica, sans-serif' }}>
-      {/* Kop laporan */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, borderBottom: '3px double #000', paddingBottom: 8 }}>
-        {logoSekolah && (
-          <img src={logoSekolah} alt="Logo sekolah" style={{ height: 56, width: 56, objectFit: 'contain' }} />
-        )}
+        {logoSekolah && <img src={logoSekolah} alt="Logo sekolah" style={{ height: 56, width: 56, objectFit: 'contain' }} />}
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 18, fontWeight: 700, textTransform: 'uppercase', lineHeight: 1.2 }}>{namaSekolah}</div>
           {alamatSekolah && <div style={{ fontSize: 10 }}>{alamatSekolah}</div>}
@@ -318,7 +286,6 @@ function RekapPrintSheet({ rekap, periode, kelasLabel, pengaturan, persenKehadir
         Periode: {periode} &nbsp;&middot;&nbsp; Kelas: {kelasLabel}
       </p>
 
-      {/* Tabel rekap (data sama dengan tabel di layar) */}
       <table className="print-table" style={{ marginTop: 10 }}>
         <thead>
           <tr>
@@ -352,14 +319,13 @@ function RekapPrintSheet({ rekap, periode, kelasLabel, pengaturan, persenKehadir
         </tbody>
       </table>
 
-      {/* Blok tanda tangan */}
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 28, fontSize: 11, pageBreakInside: 'avoid' }}>
         <div style={{ textAlign: 'left' }}>
           <p style={{ margin: 0 }}>Mengetahui,</p>
           <p style={{ margin: 0 }}>Kepala Sekolah</p>
           <div style={{ height: 60 }} />
           <p style={{ margin: 0, fontWeight: 700, textDecoration: 'underline' }}>
-            {kepalaSekolah || '_____________________' }
+            {kepalaSekolah || '_____________________'}
           </p>
         </div>
         <div style={{ textAlign: 'right' }}>

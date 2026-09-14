@@ -1,7 +1,9 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
-import { api } from '@/lib/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { api, formatDate, formatTime } from '@/lib/api'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,7 +14,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { BookUser, Loader2, Save, History, Camera, CameraOff, ScanLine, QrCode, CheckCircle2, XCircle, UserCheck, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
-import { formatDate, formatTime } from '@/lib/api'
 import { tanggalWIB } from '@/lib/utils'
 
 interface Mapel { id: string; nama: string; jam: string; hari?: string; guru?: { nama: string } }
@@ -40,10 +41,8 @@ interface ScanSessionItem {
 
 interface StatSiswa { siswaId: string; nama: string; nis: string; kelas?: string | null; terlambat: number; alpha: number }
 
-// Batas peringatan: lebih dari 3x alpha dalam sebulan -> tampilkan peringatan
 const BATAS_PERINGATAN = 3
 
-// Susun teks peringatan dari data frekuensi bulanan (dari API scan-qr)
 const buildPeringatan = (p?: { terlambatBulanIni?: number; alphaBulanIni?: number } | null, nama?: string): string | undefined => {
   if (!p) return undefined
   const parts: string[] = []
@@ -62,19 +61,12 @@ const STATUS_OPTIONS = [
 ]
 
 export function AbsensiMapelView() {
-  const [mapelList, setMapelList] = useState<Mapel[]>([])
-  const [kelasList, setKelasList] = useState<Kelas[]>([])
   const [selectedMapel, setSelectedMapel] = useState<string>('')
   const [selectedKelas, setSelectedKelas] = useState<string>('')
   const [tanggal, setTanggal] = useState(tanggalWIB())
   const [jamKe, setJamKe] = useState(1)
-  const [siswaList, setSiswaList] = useState<Siswa[]>([])
   const [statusMap, setStatusMap] = useState<Record<string, string>>({})
-  const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [history, setHistory] = useState<AbsensiMapel[]>([])
-  // Statistik frekuensi per siswa (bulan berjalan) untuk peringatan alpha > 3x
-  const [statMap, setStatMap] = useState<Record<string, { terlambat: number; alpha: number }>>({})
 
   // State scan QR
   const [scanTab, setScanTab] = useState<'camera' | 'manual'>('camera')
@@ -89,85 +81,76 @@ export function AbsensiMapelView() {
   const processScanTokenRef = useRef<typeof processScanToken | null>(null)
   const containerId = 'qr-mapel-reader-container'
 
-  // Guard race condition saat ganti kelas/mapel: hanya respons terbaru yang boleh menimpa state
-  const seqSiswaRef = useRef(0)
-
-  // Ref nilai terkini agar callback kamera tidak membaca closure/state lama (stale closure)
+  // Refs untuk nilai terkini
   const selectedMapelRef = useRef(selectedMapel)
   useEffect(() => { selectedMapelRef.current = selectedMapel }, [selectedMapel])
   const jamKeRef = useRef(jamKe)
   useEffect(() => { jamKeRef.current = jamKe }, [jamKe])
-  const tanggalRef = useRef(tanggal)
-  useEffect(() => { tanggalRef.current = tanggal }, [tanggal])
+
+  const qc = useQueryClient()
+
+  // ✅ Master data — cached
+  const { data: mapelListRaw } = useApiQuery<Mapel[]>('mata-pelajaran', '/api/mata-pelajaran')
+  const { data: kelasListRaw } = useApiQuery<Kelas[]>('kelas', '/api/kelas')
+
+  // ✅ Siswa per kelas — cached per kelas
+  const { data: siswaListRaw, isLoading: loadingSiswa } = useApiQuery<Siswa[]>(
+    ['siswa', { kelasId: selectedKelas }],
+    selectedKelas ? `/api/siswa?kelasId=${selectedKelas}` : null
+  )
+
+  // ✅ Statistik per kelas — cached per kelas
+  const { data: statDataRaw } = useApiQuery<{ data: StatSiswa[] }>(
+    ['absensi-statistik', { kelasId: selectedKelas }],
+    selectedKelas ? `/api/absensi/statistik?kelasId=${selectedKelas}` : null
+  )
+
+  // ✅ History per mapel — cached per mapel
+  const { data: historyRaw } = useApiQuery<AbsensiMapel[]>(
+    ['absensi-mapel', { mapelId: selectedMapel }],
+    selectedMapel ? `/api/absensi-mapel?mapelId=${selectedMapel}` : null
+  )
+
+  // ✅ useMemo untuk referensi stabil
+  const mapelList = useMemo(() => mapelListRaw ?? [], [mapelListRaw])
+  const kelasList = useMemo(() => kelasListRaw ?? [], [kelasListRaw])
+  const siswaList = useMemo(() => siswaListRaw ?? [], [siswaListRaw])
+  const history = useMemo(() => historyRaw ?? [], [historyRaw])
+
+  // Auto-select mapel pertama saat data datang
+  useEffect(() => {
+    if (!selectedMapel && mapelList.length > 0) setSelectedMapel(mapelList[0].id)
+  }, [mapelList, selectedMapel])
+
+  // Sync statusMap saat siswa berubah — dependency siswaListRaw (referensi stabil)
+  useEffect(() => {
+    if (!siswaListRaw) return
+    const init: Record<string, string> = {}
+    siswaListRaw.forEach(s => { init[s.id] = 'hadir' })
+    setStatusMap(init)
+  }, [siswaListRaw])
+
+  // Statistik per siswa (memo)
+  const statMap = useMemo(() => {
+    const m: Record<string, { terlambat: number; alpha: number }> = {}
+    if (statDataRaw) statDataRaw.data.forEach(r => { m[r.siswaId] = { terlambat: r.terlambat, alpha: r.alpha } })
+    return m
+  }, [statDataRaw])
 
   const selectedMapelData = mapelList.find(m => m.id === selectedMapel)
-
-  useEffect(() => {
-    api<Mapel[]>('/api/mata-pelajaran').then(data => {
-      setMapelList(data)
-      if (data[0]) setSelectedMapel(data[0].id)
-    }).catch(() => toast.error('Gagal memuat data mata pelajaran'))
-    api<Kelas[]>('/api/kelas').then(setKelasList).catch(() => {})
-  }, [])
-
-  // Load siswa saat ganti kelas
-  useEffect(() => {
-    if (!selectedKelas) {
-      setSiswaList([])
-      setStatMap({})
-      return
-    }
-    const seq = ++seqSiswaRef.current
-    setLoading(true)
-    api<Siswa[]>(`/api/siswa?kelasId=${selectedKelas}`).then(data => {
-      if (seq !== seqSiswaRef.current) return
-      setSiswaList(data)
-      // Default semua hadir
-      const init: Record<string, string> = {}
-      data.forEach(s => { init[s.id] = 'hadir' })
-      setStatusMap(init)
-    }).catch(() => {
-      if (seq !== seqSiswaRef.current) return
-      toast.error('Gagal memuat data siswa')
-    }).finally(() => {
-      if (seq === seqSiswaRef.current) setLoading(false)
-    })
-    // Muat statistik frekuensi (terlambat/alpha bulan ini) untuk peringatan
-    api<{ data: StatSiswa[] }>(`/api/absensi/statistik?kelasId=${selectedKelas}`)
-      .then(res => {
-        if (seq !== seqSiswaRef.current) return
-        const m: Record<string, { terlambat: number; alpha: number }> = {}
-        res.data.forEach(r => { m[r.siswaId] = { terlambat: r.terlambat, alpha: r.alpha } })
-        setStatMap(m)
-      })
-      .catch(() => {})
-  }, [selectedKelas])
-
-  // Load history absensi mapel (jangan fetch bila mapel belum dipilih)
-  useEffect(() => {
-    if (!selectedMapel) {
-      setHistory([])
-      return
-    }
-    api<AbsensiMapel[]>(`/api/absensi-mapel?mapelId=${selectedMapel}`).then(setHistory).catch(() => {})
-  }, [selectedMapel])
 
   const handleSave = async () => {
     if (!selectedMapel) { toast.error('Pilih mata pelajaran dulu'); return }
     setSaving(true)
     try {
-      const records = siswaList.map(s => ({
-        siswaId: s.id,
-        status: statusMap[s.id] || 'hadir',
-      }))
+      const records = siswaList.map(s => ({ siswaId: s.id, status: statusMap[s.id] || 'hadir' }))
       await api('/api/absensi-mapel', {
         method: 'POST',
         body: JSON.stringify({ mapelId: selectedMapel, tanggal, jamKe, records }),
       })
       toast.success(`Berhasil menyimpan absensi ${records.length} siswa`)
-      // Refresh history
-      const refreshed = await api<AbsensiMapel[]>(`/api/absensi-mapel?mapelId=${selectedMapel}`)
-      setHistory(refreshed)
+      qc.invalidateQueries({ queryKey: ['absensi-mapel'] })
+      qc.invalidateQueries({ queryKey: ['dashboard'] })
     } catch (e: any) {
       toast.error(e.message)
     } finally {
@@ -185,34 +168,22 @@ export function AbsensiMapelView() {
     setStatusMap(m)
   }
 
-  // ===== Scan QR untuk absensi mapel & jam =====
-  // Baca mapel/jam/tanggal dari ref agar nilai selalu terkini walau dipanggil dari callback kamera lama
   const processScanToken = async (token: string) => {
     if (!token.trim()) return
-    // Guard sinkron (ref) agar scan beruntun tidak dobel-proses saat request masih berjalan
     if (processingRef.current) return
-    // Hindari scan ganda untuk token yang sama dalam 3 detik
     const now = Date.now()
     if (lastScanRef.current.token === token && now - lastScanRef.current.time < 3000) return
     lastScanRef.current = { token, time: now }
 
     const mapelId = selectedMapelRef.current
-    if (!mapelId) {
-      toast.error('Pilih mata pelajaran dan jam pelajaran dulu')
-      return
-    }
+    if (!mapelId) { toast.error('Pilih mata pelajaran dan jam pelajaran dulu'); return }
 
     processingRef.current = true
     setProcessing(true)
     try {
       const res = await api<any>('/api/scan-qr', {
         method: 'POST',
-        body: JSON.stringify({
-          token: token.trim(),
-          mode: 'absensi_mapel',
-          mapelId: mapelId,
-          jamKe: jamKeRef.current,
-        }),
+        body: JSON.stringify({ token: token.trim(), mode: 'absensi_mapel', mapelId, jamKe: jamKeRef.current }),
       })
       setSessionResults(prev => [{
         id: `${Date.now()}-${Math.random()}`,
@@ -226,12 +197,12 @@ export function AbsensiMapelView() {
       }, ...prev])
       if (res?.success) {
         toast.success(res.message)
-        // Peringatan bila alpha siswa melebihi batas bulan ini
         if ((res?.data?.peringatan?.alphaBulanIni || 0) > BATAS_PERINGATAN) {
           toast.warning(`Peringatan: ${res.data.siswa.nama} sudah alpha ${res.data.peringatan.alphaBulanIni}x bulan ini (lebih dari ${BATAS_PERINGATAN}x)`, { duration: 6000 })
         }
-        // Refresh riwayat
-        api<AbsensiMapel[]>(`/api/absensi-mapel?mapelId=${mapelId}`).then(setHistory).catch(() => {})
+        // ✅ Invalidate history & dashboard
+        qc.invalidateQueries({ queryKey: ['absensi-mapel'] })
+        qc.invalidateQueries({ queryKey: ['dashboard'] })
       } else {
         toast.warning(res?.message || res?.error || 'Gagal memproses QR')
       }
@@ -250,14 +221,10 @@ export function AbsensiMapelView() {
       setProcessing(false)
     }
   }
-  // Simpan versi terbaru processScanToken agar callback kamera selalu memanggil yang terkini
   useEffect(() => { processScanTokenRef.current = processScanToken })
 
   const startScan = async () => {
-    if (!selectedMapel) {
-      toast.error('Pilih mata pelajaran dan jam pelajaran dulu')
-      return
-    }
+    if (!selectedMapel) { toast.error('Pilih mata pelajaran dan jam pelajaran dulu'); return }
     if (scanning || startingScan) return
     setStartingScan(true)
     setScanning(true)
@@ -268,11 +235,7 @@ export function AbsensiMapelView() {
       await html5Qr.start(
         { facingMode: 'environment' },
         { fps: 10, qrbox: { width: 250, height: 250 } },
-        (decodedText: string) => {
-          // Scan berkelanjutan: jangan berhenti setelah satu QR.
-          // Panggil via ref agar tidak stale closure (mapel/jam terbaru dipakai).
-          processScanTokenRef.current?.(decodedText)
-        },
+        (decodedText: string) => { processScanTokenRef.current?.(decodedText) },
         () => {}
       )
     } catch (e) {
@@ -287,20 +250,13 @@ export function AbsensiMapelView() {
 
   const stopScan = async () => {
     if (html5QrRef.current) {
-      try {
-        await html5QrRef.current.stop()
-        await html5QrRef.current.clear()
-      } catch (e) {
-        // ignore
-      }
+      try { await html5QrRef.current.stop(); await html5QrRef.current.clear() } catch {}
     }
     html5QrRef.current = null
     setScanning(false)
   }
 
-  useEffect(() => {
-    return () => { stopScan() }
-  }, [])
+  useEffect(() => { return () => { stopScan() } }, [])
 
   const successCount = sessionResults.filter(r => r.success).length
 
@@ -316,7 +272,6 @@ export function AbsensiMapelView() {
         </CardHeader>
       </Card>
 
-      {/* Pemilih mapel, kelas, tanggal, jam (dipakai bersama oleh input manual & scan QR) */}
       <Card>
         <CardContent className="p-4 grid md:grid-cols-4 gap-4">
           <div className="space-y-1.5">
@@ -337,9 +292,7 @@ export function AbsensiMapelView() {
             <Select value={selectedKelas} onValueChange={setSelectedKelas}>
               <SelectTrigger><SelectValue placeholder="Pilih kelas" /></SelectTrigger>
               <SelectContent>
-                {kelasList.map(k => (
-                  <SelectItem key={k.id} value={k.id}>{k.namaKelas}</SelectItem>
-                ))}
+                {kelasList.map(k => <SelectItem key={k.id} value={k.id}>{k.namaKelas}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -362,7 +315,7 @@ export function AbsensiMapelView() {
         </TabsList>
 
         <TabsContent value="input" className="mt-4 space-y-4">
-                  {loading ? (
+          {loadingSiswa ? (
             <Card>
               <CardContent className="py-12 flex justify-center">
                 <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
@@ -390,7 +343,6 @@ export function AbsensiMapelView() {
                 </div>
               </CardHeader>
               <CardContent>
-                {/* Peringatan: siswa yang alpha lebih dari BATAS_PERINGATAN kali bulan ini */}
                 {(() => {
                   const melebihi = siswaList.filter(s => (statMap[s.id]?.alpha || 0) > BATAS_PERINGATAN)
                   if (melebihi.length === 0) return null
@@ -429,7 +381,7 @@ export function AbsensiMapelView() {
                             <div className="flex items-center gap-2 flex-wrap">
                               {s.nama}
                               {(statMap[s.id]?.alpha || 0) > BATAS_PERINGATAN && (
-                                <Badge title={`Siswa alpha ${statMap[s.id].alpha}x bulan ini (lebih dari ${BATAS_PERINGATAN}x)`} className="bg-red-100 text-red-700 border border-red-300 gap-1 text-xs">
+                                <Badge title={`Alpha ${statMap[s.id].alpha}x bulan ini`} className="bg-red-100 text-red-700 border border-red-300 gap-1 text-xs">
                                   <AlertTriangle className="w-3 h-3" /> Alpha {statMap[s.id].alpha}x
                                 </Badge>
                               )}
@@ -437,13 +389,9 @@ export function AbsensiMapelView() {
                           </TableCell>
                           <TableCell>
                             <Select value={statusMap[s.id] || 'hadir'} onValueChange={(v) => setStatus(s.id, v)}>
-                              <SelectTrigger className="w-40">
-                                <SelectValue />
-                              </SelectTrigger>
+                              <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
                               <SelectContent>
-                                {STATUS_OPTIONS.map(opt => (
-                                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
-                                ))}
+                                {STATUS_OPTIONS.map(opt => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
                               </SelectContent>
                             </Select>
                           </TableCell>
@@ -465,7 +413,6 @@ export function AbsensiMapelView() {
 
         <TabsContent value="scan" className="mt-4 space-y-4">
           <div className="grid lg:grid-cols-2 gap-4">
-            {/* Scanner */}
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base flex items-center gap-2">
@@ -489,18 +436,14 @@ export function AbsensiMapelView() {
                       {!scanning && (
                         <div className="text-center p-8">
                           <Camera className="w-14 h-14 mx-auto mb-3 text-blue-600 opacity-50" />
-                          <p className="text-sm text-muted-foreground mb-3">
-                            Klik "Mulai Scan" lalu arahkan kamera ke QR Code siswa
-                          </p>
+                          <p className="text-sm text-muted-foreground mb-3">Klik "Mulai Scan" lalu arahkan kamera ke QR Code siswa</p>
                         </div>
                       )}
                     </div>
                     <div className="mt-4 flex justify-center gap-2">
                       {!scanning ? (
                         <Button onClick={startScan} disabled={!selectedMapel || startingScan} className="bg-blue-700 hover:bg-blue-800">
-                          {startingScan
-                            ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            : <Camera className="w-4 h-4 mr-2" />}
+                          {startingScan ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Camera className="w-4 h-4 mr-2" />}
                           {startingScan ? 'Menyiapkan Kamera...' : 'Mulai Scan'}
                         </Button>
                       ) : (
@@ -518,9 +461,7 @@ export function AbsensiMapelView() {
                     <div className="max-w-sm mx-auto space-y-4">
                       <div className="text-center">
                         <ScanLine className="w-14 h-14 mx-auto mb-3 text-blue-600 opacity-50" />
-                        <p className="text-sm text-muted-foreground">
-                          Masukkan NIS siswa untuk absensi manual (tanpa kamera)
-                        </p>
+                        <p className="text-sm text-muted-foreground">Masukkan NIS siswa untuk absensi manual (tanpa kamera)</p>
                       </div>
                       <div className="space-y-1.5">
                         <Label>NIS Siswa</Label>
@@ -537,12 +478,7 @@ export function AbsensiMapelView() {
                         />
                       </div>
                       <Button
-                        onClick={() => {
-                          if (manualToken) {
-                            processScanToken(manualToken)
-                            setManualToken('')
-                          }
-                        }}
+                        onClick={() => { if (manualToken) { processScanToken(manualToken); setManualToken('') } }}
                         disabled={!selectedMapel || processing}
                         className="w-full bg-blue-700 hover:bg-blue-800"
                       >
@@ -559,7 +495,6 @@ export function AbsensiMapelView() {
               </CardContent>
             </Card>
 
-            {/* Hasil scan sesi ini */}
             <Card>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
@@ -616,9 +551,7 @@ export function AbsensiMapelView() {
             </CardHeader>
             <CardContent>
               {history.length === 0 ? (
-                <div className="py-8 text-center text-muted-foreground text-sm">
-                  Belum ada riwayat absensi.
-                </div>
+                <div className="py-8 text-center text-muted-foreground text-sm">Belum ada riwayat absensi.</div>
               ) : (
                 <div className="border rounded-lg overflow-hidden max-h-96 overflow-y-auto">
                   <Table>
@@ -637,9 +570,7 @@ export function AbsensiMapelView() {
                           <TableCell>Jam {h.jamKe}</TableCell>
                           <TableCell className="font-medium text-sm">{h.siswa.nama}</TableCell>
                           <TableCell>
-                            <Badge variant="outline" className={
-                              STATUS_OPTIONS.find(o => o.value === h.status)?.color
-                            }>
+                            <Badge variant="outline" className={STATUS_OPTIONS.find(o => o.value === h.status)?.color}>
                               {h.status}
                             </Badge>
                           </TableCell>

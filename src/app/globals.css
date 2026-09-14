@@ -193,5 +193,81 @@
     page-break-inside: avoid;
   }
 }
+/* ============================================================
+   SIDEBAR — Clean modern styling
+   ============================================================ */
 
-/* versi tema biru v2 */
+/* Font modern untuk sidebar */
+aside {
+  font-family: 'Inter', 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* HAPUS semua mask/gradient yang bikin item pudar */
+aside,
+aside *,
+.sidebar-scroll,
+.sidebar-scroll * {
+  mask-image: none !important;
+  -webkit-mask-image: none !important;
+  filter: none !important;
+}
+
+/* Scrollbar tipis & halus */
+.sidebar-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.25) transparent;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 4px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+/* Semua item sidebar — visible & jelas */
+aside button,
+aside a {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* Tombol item — pastikan teks terang */
+aside button {
+  color: inherit;
+}
+
+/* Item aktif — kontras tinggi */
+aside button[data-active="true"] {
+  color: #ffffff !important;
+}
+
+/* Hover state */
+aside button:hover {
+  color: #ffffff;
+}
+
+/* Tombol logout tetap rose/merah */
+aside button.bg-rose-500,
+aside button.text-rose-300,
+aside button[class*="rose"] {
+  color: #fda4af !important;
+}
+
+aside button.text-rose-300:hover {
+  color: #fecdd3 !important;
+}

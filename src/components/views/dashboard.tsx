@@ -1,6 +1,7 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useApiQuery } from '@/hooks/use-api-query'
 import { api, formatDate, formatTime } from '@/lib/api'
 import { tanggalWIB } from '@/lib/utils'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -39,7 +40,6 @@ interface DashboardData {
   pengaturan: { key: string; value: string }[]
 }
 
-// Tipe data untuk dialog detail kartu statistik
 type DetailType = 'siswa' | 'guru' | 'kelas' | 'mapel'
 
 interface SiswaRow { id: string; nis: string; nama: string; jenisKelamin: string; foto?: string | null; kelasId?: string; kelas?: { namaKelas: string } | null }
@@ -47,7 +47,6 @@ interface GuruRow { id: string; nip: string; nama: string; jenisKelamin: string;
 interface KelasRow { id: string; namaKelas: string; tingkat: string; jurusan?: string | null; walikelas?: { nama: string } | null; jumlahSiswa?: number }
 interface MapelRow { id: string; nama: string; jam?: string | null; guru?: { nama: string; nip: string } | null }
 
-// Baris absensi siswa (GET /api/absensi)
 interface AbsensiHariIniRow {
   id: string
   siswaId: string
@@ -58,7 +57,6 @@ interface AbsensiHariIniRow {
   siswa: { nama: string; nis: string; kelas?: { namaKelas: string } | null }
 }
 
-// Baris absensi guru (GET /api/absensi-guru)
 interface GuruAbsenRow {
   id: string
   jenis: string
@@ -67,7 +65,6 @@ interface GuruAbsenRow {
   guru: { id: string; nama: string; nip: string; role?: string }
 }
 
-// Baris riwayat pelanggaran (GET /api/pelanggaran)
 interface PelanggaranDetailRow {
   id: string
   tanggal: string
@@ -97,48 +94,33 @@ const statusWarna: Record<string, string> = {
 }
 
 export function Dashboard() {
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(false)
+  const { data, isLoading, isFetching, error, refetch } = useApiQuery<DashboardData>(
+    'dashboard',
+    '/api/dashboard'
+  )
 
-  const loadDashboard = useCallback(() => {
-    setLoading(true)
-    setError(false)
-    api<DashboardData>('/api/dashboard')
-      .then(setData)
-      .catch(() => setError(true))
-      .finally(() => setLoading(false))
-  }, [])
-
-  // State dialog detail kartu statistik
   const [detail, setDetail] = useState<DetailType | null>(null)
   const [detailData, setDetailData] = useState<(SiswaRow | GuruRow | KelasRow | MapelRow)[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailCari, setDetailCari] = useState('')
 
-  // State dialog status kehadiran (kotak Hadir/Terlambat/Izin/Sakit/Alpha diklik)
   const [statusDlg, setStatusDlg] = useState<{ status: string; label: string } | null>(null)
   const [statusRows, setStatusRows] = useState<AbsensiHariIniRow[]>([])
   const [statusLoading, setStatusLoading] = useState(false)
   const [cariStatusDlg, setCariStatusDlg] = useState('')
 
-  // State dialog guru check-in / belum absen (kartu ringkas diklik)
   const [guruDlg, setGuruDlg] = useState<'checkin' | 'belum' | null>(null)
   const [guruDlgRows, setGuruDlgRows] = useState<GuruAbsenRow[]>([])
   const [guruDlgLoading, setGuruDlgLoading] = useState(false)
   const [cariGuruDlg, setCariGuruDlg] = useState('')
 
-  // State dialog detail siswa (baris "Siswa Belum Absen" diklik)
   const [siswaDlg, setSiswaDlg] = useState<{ id: string; nama: string; kelas?: string | null } | null>(null)
   const [siswaDlgData, setSiswaDlgData] = useState<{ profil?: SiswaRow; riwayat: AbsensiHariIniRow[]; pelanggaran: PelanggaranDetailRow[]; totalPoin: number } | null>(null)
   const [siswaDlgLoading, setSiswaDlgLoading] = useState(false)
 
-  // State dialog riwayat pelanggaran siswa (baris "Pelanggaran Terbaru" diklik)
   const [pelDlg, setPelDlg] = useState<{ siswaId: string; nama: string } | null>(null)
   const [pelDlgRows, setPelDlgRows] = useState<PelanggaranDetailRow[]>([])
   const [pelDlgLoading, setPelDlgLoading] = useState(false)
-
-  useEffect(() => { loadDashboard() }, [loadDashboard])
 
   const bukaDetail = async (t: DetailType) => {
     setDetail(t)
@@ -168,19 +150,12 @@ export function Dashboard() {
     }
   }
 
-  // Tanggal hari ini format YYYY-MM-DD zona WIB (konsisten dengan tab absensi lain)
-  // (memakai tanggalWIB dari '@/lib/utils' — bukan toISOString yang UTC)
-
-  // ==== Handler tabel interaktif dashboard ====
-
-  // Kotak status kehadiran (Hadir/Terlambat/Izin/Sakit/Alpha) -> daftar siswa berstatus tsb hari ini
   const bukaStatusKehadiran = async (status: string, label: string) => {
     setStatusDlg({ status, label })
     setCariStatusDlg('')
     setStatusLoading(true)
     try {
       if (status === 'alpha') {
-        // Alpha = siswa yang belum punya record absensi check-in hari ini
         const [semuaSiswa, absenHariIni] = await Promise.all([
           api<SiswaRow[]>('/api/siswa'),
           api<AbsensiHariIniRow[]>(`/api/absensi?tanggal=${tanggalWIB()}`),
@@ -205,7 +180,6 @@ export function Dashboard() {
     }
   }
 
-  // Kartu guru check-in / belum absen -> daftar guru
   const bukaGuruDialog = async (tipe: 'checkin' | 'belum') => {
     setGuruDlg(tipe)
     setCariGuruDlg('')
@@ -236,7 +210,6 @@ export function Dashboard() {
     }
   }
 
-  // Baris "Siswa Belum Absen" -> profil + riwayat absensi + pelanggaran siswa
   const bukaDetailSiswa = async (s: { id: string; nama: string; kelas?: string | null }) => {
     setSiswaDlg({ id: s.id, nama: s.nama, kelas: s.kelas })
     setSiswaDlgData(null)
@@ -258,7 +231,6 @@ export function Dashboard() {
     }
   }
 
-  // Baris "Pelanggaran Terbaru" -> riwayat seluruh pelanggaran siswa tsb
   const bukaRiwayatPelanggaran = async (siswaId: string, nama: string) => {
     setPelDlg({ siswaId, nama })
     setPelDlgRows([])
@@ -273,7 +245,6 @@ export function Dashboard() {
     }
   }
 
-  // Saring data dialog berdasarkan kata kunci pencarian
   const detailTerfilter = detailData.filter(item => {
     if (!detailCari.trim()) return true
     const q = detailCari.toLowerCase()
@@ -293,21 +264,19 @@ export function Dashboard() {
     return r.nama?.toLowerCase().includes(q) || r.guru?.nama?.toLowerCase().includes(q)
   })
 
-  // Saring baris dialog status kehadiran
   const statusTerfilter = statusRows.filter(r => {
     if (!cariStatusDlg.trim()) return true
     const q = cariStatusDlg.toLowerCase()
     return r.siswa?.nama?.toLowerCase().includes(q) || r.siswa?.nis?.includes(q) || r.siswa?.kelas?.namaKelas?.toLowerCase().includes(q)
   })
 
-  // Saring baris dialog guru
   const guruDlgTerfilter = guruDlgRows.filter(r => {
     if (!cariGuruDlg.trim()) return true
     const q = cariGuruDlg.toLowerCase()
     return r.guru?.nama?.toLowerCase().includes(q) || r.guru?.nip?.includes(q)
   })
 
-  if (loading) {
+  if (isLoading && !data) {
     return (
       <div className="space-y-4">
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -321,7 +290,7 @@ export function Dashboard() {
     )
   }
 
-  if (error || !data) {
+  if (error && !data) {
     return (
       <div className="space-y-4">
         <Card>
@@ -333,7 +302,7 @@ export function Dashboard() {
                 Data dashboard tidak dapat dimuat. Periksa koneksi lalu coba lagi.
               </p>
             </div>
-            <Button onClick={loadDashboard} className="bg-blue-700 hover:bg-blue-800">
+            <Button onClick={() => refetch()} className="bg-blue-700 hover:bg-blue-800">
               <Loader2 className="w-4 h-4 mr-2" /> Coba Lagi
             </Button>
           </CardContent>
@@ -341,6 +310,8 @@ export function Dashboard() {
       </div>
     )
   }
+
+  if (!data) return null
 
   const s = data.stats
   const namaSekolah = data.pengaturan.find(p => p.key === 'nama_sekolah')?.value || 'Sekolah'
@@ -357,6 +328,12 @@ export function Dashboard() {
 
   return (
     <div className="space-y-6">
+      {isFetching && !isLoading && (
+        <div className="text-xs text-muted-foreground flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin" /> Memperbarui data...
+        </div>
+      )}
+
       {/* Welcome banner */}
       <Card className="bg-gradient-to-br from-blue-700 via-blue-800 to-sky-900 text-white border-0 overflow-hidden relative">
         <div className="absolute top-0 right-0 w-64 h-64 bg-sky-400/20 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2" />
@@ -385,71 +362,26 @@ export function Dashboard() {
 
       {/* Stats cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="Total Siswa"
-          value={s.totalSiswa}
-          icon={Users}
-          color="from-blue-500 to-sky-600"
-          desc="Aktif terdaftar"
-          hint="text-blue-600"
-          onClick={() => bukaDetail('siswa')}
-        />
-        <StatCard
-          title="Total Guru"
-          value={s.totalGuru}
-          icon={UserCog}
-          color="from-sky-500 to-cyan-600"
-          desc="Pengajar aktif"
-          hint="text-sky-600"
-          onClick={() => bukaDetail('guru')}
-        />
-        <StatCard
-          title="Total Kelas"
-          value={s.totalKelas}
-          icon={School}
-          color="from-cyan-500 to-blue-600"
-          desc="Rombongan belajar"
-          hint="text-cyan-600"
-          onClick={() => bukaDetail('kelas')}
-        />
-        <StatCard
-          title="Mata Pelajaran"
-          value={s.totalMapel}
-          icon={BookOpen}
-          color="from-purple-500 to-pink-600"
-          desc="Mata pelajaran"
-          hint="text-purple-600"
-          onClick={() => bukaDetail('mapel')}
-        />
+        <StatCard title="Total Siswa" value={s.totalSiswa} icon={Users} color="from-blue-500 to-sky-600" desc="Aktif terdaftar" hint="text-blue-600" onClick={() => bukaDetail('siswa')} />
+        <StatCard title="Total Guru" value={s.totalGuru} icon={UserCog} color="from-sky-500 to-cyan-600" desc="Pengajar aktif" hint="text-sky-600" onClick={() => bukaDetail('guru')} />
+        <StatCard title="Total Kelas" value={s.totalKelas} icon={School} color="from-cyan-500 to-blue-600" desc="Rombongan belajar" hint="text-cyan-600" onClick={() => bukaDetail('kelas')} />
+        <StatCard title="Mata Pelajaran" value={s.totalMapel} icon={BookOpen} color="from-purple-500 to-pink-600" desc="Mata pelajaran" hint="text-purple-600" onClick={() => bukaDetail('mapel')} />
       </div>
 
-      {/* Dialog detail daftar data (muncul saat kartu statistik diklik) */}
+      {/* Dialog detail kartu statistik */}
       <Dialog open={!!detail} onOpenChange={(o) => !o && setDetail(null)}>
         <DialogContent className="max-w-md sm:max-w-lg max-h-[85vh] flex flex-col gap-4">
           <DialogHeader className="flex-shrink-0">
             <DialogTitle className="flex items-center gap-2">
               {detail && DETAIL_META[detail].judul}
-              {!detailLoading && (
-                <Badge variant="secondary" className="text-xs">{detailTerfilter.length} data</Badge>
-              )}
+              {!detailLoading && <Badge variant="secondary" className="text-xs">{detailTerfilter.length} data</Badge>}
             </DialogTitle>
-            <DialogDescription>
-              {detail && DETAIL_META[detail].deskripsi}
-            </DialogDescription>
+            <DialogDescription>{detail && DETAIL_META[detail].deskripsi}</DialogDescription>
           </DialogHeader>
-
-          {/* Pencarian */}
           <div className="relative flex-shrink-0">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={detailCari}
-              onChange={(e) => setDetailCari(e.target.value)}
-              placeholder="Cari nama / NIS / NIP / kelas…"
-              className="pl-9"
-            />
+            <Input value={detailCari} onChange={(e) => setDetailCari(e.target.value)} placeholder="Cari nama / NIS / NIP / kelas…" className="pl-9" />
           </div>
-
-          {/* Daftar data */}
           <div className="overflow-y-auto max-h-96 -mx-1 px-1">
             {detailLoading ? (
               <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
@@ -465,7 +397,7 @@ export function Dashboard() {
                 {detail === 'siswa' && (detailTerfilter as SiswaRow[]).map(sw => (
                   <div key={sw.id} className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors">
                     <div className="w-9 h-9 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center flex-shrink-0 text-xs font-semibold overflow-hidden">
-                      {sw.foto ? <img src={sw.foto} alt={`Foto ${sw.nama}`} className="w-full h-full object-cover" /> : sw.nama.charAt(0)}
+                      {sw.foto ? <img src={sw.foto} alt={sw.nama} className="w-full h-full object-cover" /> : sw.nama.charAt(0)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-sm truncate">{sw.nama}</p>
@@ -478,7 +410,7 @@ export function Dashboard() {
                 {detail === 'guru' && (detailTerfilter as GuruRow[]).map(g => (
                   <div key={g.id} className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 transition-colors">
                     <div className="w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0 text-xs font-semibold overflow-hidden">
-                      {g.foto ? <img src={g.foto} alt={`Foto ${g.nama}`} className="w-full h-full object-cover" /> : g.nama.charAt(0)}
+                      {g.foto ? <img src={g.foto} alt={g.nama} className="w-full h-full object-cover" /> : g.nama.charAt(0)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-sm truncate">{g.nama}</p>
@@ -520,7 +452,7 @@ export function Dashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog: daftar siswa per status kehadiran hari ini (kotak Hadir/Terlambat/Izin/Sakit/Alpha diklik) */}
+      {/* Dialog status kehadiran */}
       <Dialog open={!!statusDlg} onOpenChange={(o) => !o && setStatusDlg(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -543,25 +475,19 @@ export function Dashboard() {
             ) : (
               statusTerfilter.map(r => (
                 <div key={r.id} className="flex items-center gap-3 p-3 rounded-lg border bg-card">
-                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-semibold ${
-                    statusDlg?.status === 'alpha' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
-                  }`}>
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-semibold ${statusDlg?.status === 'alpha' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
                     {r.siswa?.nama?.charAt(0)}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="font-semibold text-sm truncate">{r.siswa?.nama}</p>
                     <p className="text-xs text-muted-foreground font-mono">NIS {r.siswa?.nis}</p>
                   </div>
-                  {r.siswa?.kelas?.namaKelas && (
-                    <Badge variant="secondary" className="flex-shrink-0 text-xs">{r.siswa.kelas.namaKelas}</Badge>
-                  )}
+                  {r.siswa?.kelas?.namaKelas && <Badge variant="secondary" className="flex-shrink-0 text-xs">{r.siswa.kelas.namaKelas}</Badge>}
                   <div className="text-right flex-shrink-0">
                     {r.waktu ? (
                       <>
                         <p className="text-xs font-medium">{formatTime(r.waktu)}</p>
-                        {!!r.keterlambatan && r.keterlambatan > 0 && (
-                          <p className="text-[11px] text-amber-700">+{r.keterlambatan} menit</p>
-                        )}
+                        {!!r.keterlambatan && r.keterlambatan > 0 && <p className="text-[11px] text-amber-700">+{r.keterlambatan} menit</p>}
                       </>
                     ) : (
                       <Badge variant="outline" className={statusWarna[r.status] || ''}>{r.status}</Badge>
@@ -574,7 +500,7 @@ export function Dashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog: daftar guru check-in / belum absen hari ini */}
+      {/* Dialog guru */}
       <Dialog open={!!guruDlg} onOpenChange={(o) => !o && setGuruDlg(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -597,9 +523,7 @@ export function Dashboard() {
             ) : (
               guruDlgTerfilter.map(r => (
                 <div key={r.id} className="flex items-center gap-3 p-3 rounded-lg border bg-card">
-                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-semibold ${
-                    guruDlg === 'checkin' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'
-                  }`}>
+                  <div className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-semibold ${guruDlg === 'checkin' ? 'bg-blue-100 text-blue-700' : 'bg-red-100 text-red-700'}`}>
                     {r.guru?.nama?.charAt(0)}
                   </div>
                   <div className="flex-1 min-w-0">
@@ -621,7 +545,7 @@ export function Dashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog: detail siswa (baris "Siswa Belum Absen" diklik) */}
+      {/* Dialog detail siswa */}
       <Dialog open={!!siswaDlg} onOpenChange={(o) => !o && setSiswaDlg(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -635,7 +559,6 @@ export function Dashboard() {
             <div className="flex justify-center py-10"><Loader2 className="w-7 h-7 animate-spin text-blue-600" /></div>
           ) : (
             <div className="space-y-4">
-              {/* Profil ringkas */}
               <div className="grid grid-cols-3 gap-2 text-center">
                 <div className="rounded-lg border p-2.5">
                   <p className="text-[11px] text-muted-foreground">NIS</p>
@@ -646,14 +569,10 @@ export function Dashboard() {
                   <p className="text-sm font-semibold">{siswaDlgData.profil?.jenisKelamin || '-'}</p>
                 </div>
                 <div className="rounded-lg border p-2.5">
-                  <p className="text-[11px] text-muted-foreground">Total Poin Pelanggaran</p>
-                  <p className={`text-sm font-bold ${siswaDlgData.totalPoin > 0 ? 'text-red-700' : 'text-emerald-700'}`}>
-                    {siswaDlgData.totalPoin}
-                  </p>
+                  <p className="text-[11px] text-muted-foreground">Total Poin</p>
+                  <p className={`text-sm font-bold ${siswaDlgData.totalPoin > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{siswaDlgData.totalPoin}</p>
                 </div>
               </div>
-
-              {/* Riwayat absensi terakhir */}
               <div>
                 <p className="text-sm font-semibold mb-2">Riwayat Absensi Terakhir</p>
                 {siswaDlgData.riwayat.length === 0 ? (
@@ -664,9 +583,7 @@ export function Dashboard() {
                       <div key={r.id} className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border text-sm">
                         <span className="text-xs text-muted-foreground">{formatDate(r.waktu)}</span>
                         <div className="flex items-center gap-2">
-                          {!!r.keterlambatan && r.keterlambatan > 0 && (
-                            <span className="text-[11px] text-amber-700">+{r.keterlambatan} mnt</span>
-                          )}
+                          {!!r.keterlambatan && r.keterlambatan > 0 && <span className="text-[11px] text-amber-700">+{r.keterlambatan} mnt</span>}
                           <Badge variant="outline" className={`text-xs capitalize ${statusWarna[r.status] || ''}`}>{r.status}</Badge>
                         </div>
                       </div>
@@ -674,8 +591,6 @@ export function Dashboard() {
                   </div>
                 )}
               </div>
-
-              {/* Riwayat pelanggaran ringkas */}
               {siswaDlgData.pelanggaran.length > 0 && (
                 <div>
                   <p className="text-sm font-semibold mb-2">Pelanggaran ({siswaDlgData.pelanggaran.length}x)</p>
@@ -694,7 +609,7 @@ export function Dashboard() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog: riwayat pelanggaran siswa (baris "Pelanggaran Terbaru" diklik) */}
+      {/* Dialog riwayat pelanggaran */}
       <Dialog open={!!pelDlg} onOpenChange={(o) => !o && setPelDlg(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -714,9 +629,7 @@ export function Dashboard() {
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-semibold text-sm">{p.jenisPelanggaran?.nama}</p>
                     <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <Badge variant="outline" className={`text-xs capitalize ${kategoriBadge[p.jenisPelanggaran?.kategori] || ''}`}>
-                        {p.jenisPelanggaran?.kategori}
-                      </Badge>
+                      <Badge variant="outline" className={`text-xs capitalize ${kategoriBadge[p.jenisPelanggaran?.kategori] || ''}`}>{p.jenisPelanggaran?.kategori}</Badge>
                       <Badge variant="outline" className="text-amber-700 border-amber-300 text-xs">-{p.jenisPelanggaran?.poin} poin</Badge>
                     </div>
                   </div>
@@ -749,14 +662,8 @@ export function Dashboard() {
               <AttendanceStat label="Sakit" value={s.sakit} total={s.totalSiswa} color="bg-purple-50 text-purple-700 border-purple-200" onClick={() => bukaStatusKehadiran('sakit', 'Sakit')} />
               <AttendanceStat label="Alpha" value={s.alpha} total={s.totalSiswa} color="bg-red-50 text-red-700 border-red-200" onClick={() => bukaStatusKehadiran('alpha', 'Alpha')} />
             </div>
-
             <div className="mt-6 grid grid-cols-2 gap-4 pt-4 border-t">
-              <button
-                type="button"
-                onClick={() => bukaGuruDialog('checkin')}
-                aria-label="Lihat daftar guru sudah check-in"
-                className="flex items-center gap-3 rounded-lg p-2 -m-2 text-left cursor-pointer hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 transition-colors"
-              >
+              <button type="button" onClick={() => bukaGuruDialog('checkin')} className="flex items-center gap-3 rounded-lg p-2 -m-2 text-left cursor-pointer hover:bg-muted/50">
                 <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center flex-shrink-0">
                   <UserCheck className="w-5 h-5 text-blue-600" />
                 </div>
@@ -766,12 +673,7 @@ export function Dashboard() {
                   <p className="text-[11px] text-blue-600 font-medium mt-0.5 flex items-center gap-1"><Eye className="w-3 h-3" /> Klik untuk lihat</p>
                 </div>
               </button>
-              <button
-                type="button"
-                onClick={() => bukaGuruDialog('belum')}
-                aria-label="Lihat daftar guru belum absen"
-                className="flex items-center gap-3 rounded-lg p-2 -m-2 text-left cursor-pointer hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 transition-colors"
-              >
+              <button type="button" onClick={() => bukaGuruDialog('belum')} className="flex items-center gap-3 rounded-lg p-2 -m-2 text-left cursor-pointer hover:bg-muted/50">
                 <div className="w-10 h-10 rounded-lg bg-red-100 flex items-center justify-center flex-shrink-0">
                   <UserX className="w-5 h-5 text-red-600" />
                 </div>
@@ -793,26 +695,11 @@ export function Dashboard() {
           <CardContent>
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
-                <Pie
-                  data={pieData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={45}
-                  outerRadius={75}
-                  paddingAngle={3}
-                  dataKey="value"
-                >
-                  {pieData.map((entry, idx) => (
-                    <Cell key={idx} fill={entry.color} />
-                  ))}
+                <Pie data={pieData} cx="50%" cy="50%" innerRadius={45} outerRadius={75} paddingAngle={3} dataKey="value">
+                  {pieData.map((entry, idx) => <Cell key={idx} fill={entry.color} />)}
                 </Pie>
                 <Tooltip />
-                <Legend
-                  layout="horizontal"
-                  verticalAlign="bottom"
-                  align="center"
-                  wrapperStyle={{ fontSize: '11px' }}
-                />
+                <Legend layout="horizontal" verticalAlign="bottom" align="center" wrapperStyle={{ fontSize: '11px' }} />
               </PieChart>
             </ResponsiveContainer>
           </CardContent>
@@ -892,35 +779,18 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             {data.pelanggaranTerbaru.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground text-sm">
-                Tidak ada pelanggaran tercatat.
-              </div>
+              <div className="text-center py-8 text-muted-foreground text-sm">Tidak ada pelanggaran tercatat.</div>
             ) : (
               <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                 {data.pelanggaranTerbaru.map(p => (
-                  <div
-                    key={p.id}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Lihat riwayat pelanggaran ${p.siswa}`}
-                    onClick={() => bukaRiwayatPelanggaran(p.siswaId, p.siswa)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        bukaRiwayatPelanggaran(p.siswaId, p.siswa)
-                      }
-                    }}
-                    className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                  >
+                  <div key={p.id} role="button" tabIndex={0} onClick={() => bukaRiwayatPelanggaran(p.siswaId, p.siswa)} className="flex items-start gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 cursor-pointer transition-colors">
                     <div className="w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center flex-shrink-0">
                       <AlertCircle className="w-4 h-4" />
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between gap-2">
                         <p className="font-semibold text-sm truncate">{p.siswa}</p>
-                        <Badge variant="outline" className="text-amber-700 border-amber-300 flex-shrink-0">
-                          -{p.poin} poin
-                        </Badge>
+                        <Badge variant="outline" className="text-amber-700 border-amber-300 flex-shrink-0">-{p.poin} poin</Badge>
                       </div>
                       <p className="text-xs text-muted-foreground truncate">{p.pelanggaran}</p>
                       <div className="flex items-center gap-2 mt-1">
@@ -946,26 +816,11 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             {data.belumAbsen.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground text-sm">
-                Semua siswa sudah absen. 🎉
-              </div>
+              <div className="text-center py-8 text-muted-foreground text-sm">Semua siswa sudah absen. 🎉</div>
             ) : (
               <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                 {data.belumAbsen.map(s => (
-                  <div
-                    key={s.id}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Lihat detail ${s.nama}`}
-                    onClick={() => bukaDetailSiswa(s)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        bukaDetailSiswa(s)
-                      }
-                    }}
-                    className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
-                  >
+                  <div key={s.id} role="button" tabIndex={0} onClick={() => bukaDetailSiswa(s)} className="flex items-center gap-3 p-3 rounded-lg border bg-card hover:bg-muted/30 cursor-pointer transition-colors">
                     <div className="w-9 h-9 rounded-full bg-red-100 text-red-700 flex items-center justify-center flex-shrink-0 text-xs font-semibold">
                       {s.nama.charAt(0)}
                     </div>
@@ -999,7 +854,6 @@ function StatCard({ title, value, icon: Icon, color, desc, hint, onClick }: {
     <Card
       role="button"
       tabIndex={0}
-      aria-label={`Lihat daftar ${title}`}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -1007,7 +861,7 @@ function StatCard({ title, value, icon: Icon, color, desc, hint, onClick }: {
           onClick()
         }
       }}
-      className="overflow-hidden cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+      className="overflow-hidden cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all"
     >
       <CardContent className="p-5">
         <div className="flex items-start justify-between">
@@ -1043,7 +897,6 @@ function AttendanceStat({ label, value, total, color, onClick }: {
       {...(interaktif ? {
         role: 'button',
         tabIndex: 0,
-        'aria-label': `Lihat daftar siswa ${label} hari ini`,
         onClick,
         onKeyDown: (e: React.KeyboardEvent) => {
           if (e.key === 'Enter' || e.key === ' ') {
@@ -1052,7 +905,7 @@ function AttendanceStat({ label, value, total, color, onClick }: {
           }
         },
       } : {})}
-      className={`rounded-lg border p-3 ${color} ${interaktif ? 'cursor-pointer hover:shadow-sm hover:-translate-y-0.5 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600' : ''}`}
+      className={`rounded-lg border p-3 ${color} ${interaktif ? 'cursor-pointer hover:shadow-sm hover:-translate-y-0.5 transition-all' : ''}`}
     >
       <p className="text-xs font-medium opacity-80">{label}</p>
       <p className="text-2xl font-bold mt-1">{value}</p>
